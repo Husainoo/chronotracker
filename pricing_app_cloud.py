@@ -29,43 +29,53 @@ DISC_CSV = os.getenv('DISC_CSV', 'discontinued_rolex.csv')
 IMAGES_DIR = os.getenv('IMAGES_PATH', 'images')
 FAVORITES_FILE = 'favorites.json'
 
-print("جاري تحميل المحرك والبيانات ...")
-ENGINE = WatchValuationEngine(csv_path=CSV_PATH, discontinued_csv=DISC_CSV)
-
-# ========================
-# فهرس البحث (autocomplete)
-# ========================
-_df = ENGINE.sold
-_yr = pd.to_numeric(_df['year'], errors='coerce')
-_dfy = _df.assign(_y=_yr)
-_idx = (_dfy.groupby('referance')
-        .agg(brand=('brand', 'first'), model=('model', 'first'),
-             nick=('nickName', 'first'), n=('soldPrice', 'size'))
-        .reset_index().sort_values('n', ascending=False))
-
-_years_by_ref = {}
-_yvalid = _dfy[(_dfy['_y'] >= 1990) & (_dfy['_y'] <= 2026)]
-for ref, grp in _yvalid.groupby('referance'):
-    ys = sorted({int(y) for y in grp['_y']}, reverse=True)
-    ys = ENGINE.plausible_years(str(ref), ys)
-    _years_by_ref[str(ref)] = ys
-
+# المحرك والفهرس ثقيلان — يُحمّلان في boot() بعد فتح المنفذ مباشرة (انظر __main__).
+# هكذا يكتشف Render المنفذ خلال مللي ثانية حتى لو كان التحميل بطيئاً على free tier.
+ENGINE = None
 SEARCH_INDEX = []
-for _, r in _idx.iterrows():
-    nick = '' if pd.isna(r['nick']) else str(r['nick'])
-    SEARCH_INDEX.append({
-        'ref': str(r['referance']),
-        'brand': str(r['brand']),
-        'model': str(r['model']).strip(),
-        'nick': nick,
-        'n': int(r['n']),
-        'years': _years_by_ref.get(str(r['referance']), []),
-        'label': f"{r['referance']} — {r['brand']} {str(r['model']).strip()}"
-                 + (f" ({nick})" if nick else "") + f"  ·  {int(r['n'])} صفقة",
-        'search': f"{r['referance']} {r['brand']} {r['model']} {nick}".lower(),
-    })
-print(f"✓ جاهز — {len(ENGINE.sold):,} صفقة، {len(SEARCH_INDEX):,} موديل قابل للتسعير")
-print(f"🔐 الحماية مفعّلة · الخادم على الباب {PORT}")
+_years_by_ref = {}
+_REF_INFO = {}
+
+def boot():
+    """تحميل المحرك وبناء فهرس البحث. يُستدعى بعد ربط المنفذ مباشرة."""
+    global ENGINE, SEARCH_INDEX, _years_by_ref, _REF_INFO
+    print("جاري تحميل المحرك والبيانات ...")
+    ENGINE = WatchValuationEngine(csv_path=CSV_PATH, discontinued_csv=DISC_CSV)
+
+    _df = ENGINE.sold
+    _yr = pd.to_numeric(_df['year'], errors='coerce')
+    _dfy = _df.assign(_y=_yr)
+    _idx = (_dfy.groupby('referance')
+            .agg(brand=('brand', 'first'), model=('model', 'first'),
+                 nick=('nickName', 'first'), n=('soldPrice', 'size'))
+            .reset_index().sort_values('n', ascending=False))
+
+    years_by_ref = {}
+    _yvalid = _dfy[(_dfy['_y'] >= 1990) & (_dfy['_y'] <= 2026)]
+    for ref, grp in _yvalid.groupby('referance'):
+        ys = sorted({int(y) for y in grp['_y']}, reverse=True)
+        ys = ENGINE.plausible_years(str(ref), ys)
+        years_by_ref[str(ref)] = ys
+
+    index = []
+    for _, r in _idx.iterrows():
+        nick = '' if pd.isna(r['nick']) else str(r['nick'])
+        index.append({
+            'ref': str(r['referance']),
+            'brand': str(r['brand']),
+            'model': str(r['model']).strip(),
+            'nick': nick,
+            'n': int(r['n']),
+            'years': years_by_ref.get(str(r['referance']), []),
+            'label': f"{r['referance']} — {r['brand']} {str(r['model']).strip()}"
+                     + (f" ({nick})" if nick else "") + f"  ·  {int(r['n'])} صفقة",
+            'search': f"{r['referance']} {r['brand']} {r['model']} {nick}".lower(),
+        })
+
+    _years_by_ref = years_by_ref
+    SEARCH_INDEX = index
+    _REF_INFO = {m['ref']: m['label'] for m in SEARCH_INDEX}
+    print(f"✓ جاهز — {len(ENGINE.sold):,} صفقة، {len(SEARCH_INDEX):,} موديل قابل للتسعير")
 
 
 # ========================
@@ -125,8 +135,6 @@ def save_favorites(favs):
         return True
     except Exception:
         return False
-
-_REF_INFO = {m['ref']: m['label'] for m in SEARCH_INDEX}
 
 def fav_list_detailed():
     out = []
@@ -1051,10 +1059,14 @@ class RequestHandler(BaseHTTPRequestHandler):
 if __name__ == '__main__':
     print(f"\n{'='*60}")
     print(f"🚀 ChronoTracker Cloud Edition")
-    print(f"🌐 الخادم: http://0.0.0.0:{PORT}")
-    print(f"{'='*60}\n")
+    print(f"{'='*60}")
+    # 1) نفتح المنفذ أولاً — نواة النظام تقبل اتصال فحص Render فوراً (حتى قبل serve)
     server = HTTPServer(('0.0.0.0', PORT), RequestHandler)
-    print(f"✓ الخادم يستمع على الباب {PORT}...\n")
+    print(f"✓ المنفذ {PORT} مفتوح على 0.0.0.0 — جاري تحميل المحرك ...")
+    # 2) التحميل الثقيل بعد فتح المنفذ
+    boot()
+    # 3) بدء معالجة الطلبات
+    print(f"✓ بدء خدمة الطلبات على الباب {PORT}\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
