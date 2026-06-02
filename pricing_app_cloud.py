@@ -90,6 +90,19 @@ def verify_password(provided, expected):
     """تحقق من كلمة السر."""
     return hash_password(provided) == hash_password(expected)
 
+# قيمة الكوكي المتوقّعة بعد تسجيل الدخول (هاش كلمة السر)
+AUTH_COOKIE = 'ct_auth'
+AUTH_VALUE = hash_password(APP_PASSWORD)
+
+def parse_cookies(cookie_header):
+    """تحليل ترويسة Cookie إلى dict."""
+    out = {}
+    for part in (cookie_header or '').split(';'):
+        if '=' in part:
+            k, v = part.strip().split('=', 1)
+            out[k.strip()] = v.strip()
+    return out
+
 def search_models(q, limit=20):
     q = (q or '').strip().lower()
     if not q:
@@ -135,10 +148,34 @@ class RequestHandler(BaseHTTPRequestHandler):
         """تسجيل مخصص (عربي)."""
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {format % args}")
 
+    def _is_authed(self):
+        """هل الطلب يحمل كوكي مصادقة صحيح؟"""
+        cookies = parse_cookies(self.headers.get('Cookie', ''))
+        return cookies.get(AUTH_COOKIE) == AUTH_VALUE
+
+    def _redirect(self, location):
+        """تحويل (303) إلى مسار آخر."""
+        self.send_response(303)
+        self.send_header('Location', location)
+        self.end_headers()
+
+    def _send_login(self, error=''):
+        """عرض صفحة تسجيل الدخول."""
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(self._html_login(error).encode('utf-8'))
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+
+        # ====== بوابة الحماية
+        if path == '/login':
+            return self._send_login()
+        if not self._is_authed():
+            return self._redirect('/login')
 
         # ====== الصفحة الرئيسية
         if path == '/':
@@ -207,7 +244,25 @@ class RequestHandler(BaseHTTPRequestHandler):
         # قراءة الـ body
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length).decode('utf-8')
-        
+
+        # ====== تسجيل الدخول (نموذج urlencoded)
+        if path == '/login':
+            pw = parse_qs(body).get('password', [''])[0]
+            if verify_password(pw, APP_PASSWORD):
+                self.send_response(303)
+                self.send_header('Location', '/')
+                self.send_header('Set-Cookie',
+                                 f'{AUTH_COOKIE}={AUTH_VALUE}; Path=/; HttpOnly; SameSite=Lax')
+                self.end_headers()
+            else:
+                self._send_login('كلمة السر غير صحيحة')
+            return
+
+        # ====== حماية باقي مسارات POST
+        if not self._is_authed():
+            self.send_error(401, 'Unauthorized')
+            return
+
         try:
             data = json.loads(body) if body else {}
         except:
@@ -245,6 +300,53 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header('Content-type', 'application/json; charset=utf-8')
         self.end_headers()
         self.wfile.write(json.dumps(obj, ensure_ascii=False).encode('utf-8'))
+
+    def _html_login(self, error=''):
+        """صفحة تسجيل الدخول."""
+        err_html = (f'<p style="color:#ff6b6b; text-align:center;">{error}</p>'
+                    if error else '')
+        return '''<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>دخول — ChronoTracker</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; padding: 20px; min-height: 100vh;
+            display: flex; align-items: center; justify-content: center;
+            background: #0a0a0a; color: #f0f0f0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Arial';
+        }
+        .login-box {
+            background: #1a1a1a; border: 1px solid #d4af37;
+            border-radius: 8px; padding: 40px; width: 100%; max-width: 360px;
+        }
+        h1 { color: #d4af37; text-align: center; margin: 0 0 25px; }
+        input {
+            width: 100%; padding: 12px 15px; font-size: 16px; margin-bottom: 15px;
+            border: 1px solid #d4af37; background: #0a0a0a; color: #f0f0f0;
+            border-radius: 4px;
+        }
+        button {
+            width: 100%; padding: 12px; background: #d4af37; color: #000;
+            border: none; font-weight: bold; cursor: pointer; border-radius: 4px;
+            font-size: 16px;
+        }
+        button:hover { opacity: 0.9; }
+    </style>
+</head>
+<body>
+    <form class="login-box" method="POST" action="/login">
+        <h1>🔐 ChronoTracker</h1>
+        ''' + err_html + '''
+        <input type="password" name="password" placeholder="كلمة السر" autofocus required>
+        <button type="submit">دخول</button>
+    </form>
+</body>
+</html>
+        '''
 
     def _html_home(self):
         """الصفحة الرئيسية (عربي RTL، ذهبي/داكن)."""

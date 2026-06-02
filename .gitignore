@@ -5,8 +5,10 @@ bot_memory.json
 # Python virtual environment
 venv/
 
-# Data files
+# Data files — ignore all CSVs by default, but keep the two the app/bot need
 *.csv
+!chronotracker_complete_v2.csv
+!discontinued_rolex.csv
 
 # macOS junk
 .DS_Store

@@ -1,0 +1,44 @@
+# Render Blueprint — ChronoTracker
+# الأسرار (APP_PASSWORD, TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, ALLOWED_USER_IDS)
+# تُدخل من لوحة تحكم Render (sync: false) — لا تُكتب هنا.
+services:
+  # ====== تطبيق التسعير (Web Service)
+  - type: web
+    name: chronotracker-web
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python pricing_app_cloud.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: APP_PASSWORD
+        sync: false        # أدخلها في لوحة Render
+      - key: CSV_PATH
+        value: chronotracker_complete_v2.csv
+      - key: DISC_CSV
+        value: discontinued_rolex.csv
+      - key: IMAGES_PATH
+        value: images
+    # ملاحظة: Render يضبط PORT تلقائياً والتطبيق يقرأه من البيئة.
+
+  # ====== بوت تلقرام (Background Worker — دائم التشغيل، مدفوع)
+  - type: worker
+    name: chronotracker-bot
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python telegram_bot.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ALLOWED_USER_IDS
+        sync: false
+      - key: CSV_PATH
+        value: chronotracker_complete_v2.csv
+      - key: DISC_CSV
+        value: discontinued_rolex.csv
