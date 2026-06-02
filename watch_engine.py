@@ -12,13 +12,27 @@ DISCONTINUED_CSV = "discontinued_rolex.csv"  # قائمة الموديلات ا�
 
 class WatchValuationEngine:
     def __init__(self, csv_path=CSV_PATH, discontinued_csv=DISCONTINUED_CSV):
-        df = pd.read_csv(csv_path, low_memory=False)
+        # تحميل موفّر للذاكرة: نقرأ الأعمدة المستخدمة فقط، ونحوّل الأعمدة النصية
+        # المتكررة إلى category والأسعار إلى float32 (يقلّل ذاكرة البيانات ~88%).
+        # 'referance' يبقى نصياً (object) لأنه مفتاح التجميع الأساسي في كل المحرك.
+        usecols = ['brand', 'model', 'nickName', 'referance', 'size', 'dialColor',
+                   'metal', 'braceletMaterial', 'retailPrice', 'soldPrice', 'lastBid',
+                   'priceDate', 'condition', 'fullSet', 'year', 'status', 'pageName',
+                   'country', 'remarks']
+        cat_cols = ['brand', 'model', 'nickName', 'size', 'dialColor', 'metal',
+                    'braceletMaterial', 'condition', 'fullSet', 'status', 'pageName',
+                    'country']
+        dtypes = {c: 'category' for c in cat_cols}
+        for c in ('retailPrice', 'soldPrice', 'lastBid'):
+            dtypes[c] = 'float32'
+        df = pd.read_csv(csv_path, usecols=usecols, dtype=dtypes)
         df['priceDate'] = pd.to_datetime(df['priceDate'])
-        df['year'] = pd.to_numeric(df['year'], errors='coerce')
+        df['year'] = pd.to_numeric(df['year'], errors='coerce').astype('float32')
         df.loc[(df['year'] < 1990) | (df['year'] > 2026), 'year'] = np.nan
-        df['fs'] = df['fullSet'].apply(
-            lambda x: 'Full' if str(x).startswith('Full Set') else 'Partial')
-        df['cond2'] = df['condition'].replace({'Pre-owned Like New': 'Pre-owned'})
+        df['fs'] = df['fullSet'].astype(str).map(
+            lambda x: 'Full' if x.startswith('Full Set') else 'Partial').astype('category')
+        df['cond2'] = (df['condition'].astype(str)
+                       .replace({'Pre-owned Like New': 'Pre-owned'}).astype('category'))
         self.df = df
         self.sold = df[(df['status'] == 'Sold') & (df['soldPrice'] > 0)].copy()
         self.notsold = df[(df['status'] == 'Not-Sold') & (df['lastBid'] > 0)].copy()
@@ -70,16 +84,21 @@ class WatchValuationEngine:
         if len(r) < 80:
             return None
         r = r.copy()
-        r['logp'] = np.log(r['soldPrice'])
-        r['yr'] = (r['year'] - 2020).astype(float)
-        r['unworn'] = (r['cond2'] == 'Unworn').astype(float)
-        r['full'] = (r['fs'] == 'Full').astype(float)
-        refs = pd.get_dummies(r['referance'], prefix='r', drop_first=True).astype(float)
-        X = pd.concat([pd.Series(1.0, index=r.index, name='c'),
-                       r['yr'], r['unworn'], r['full'], refs], axis=1).values
-        y = r['logp'].values
-        b, *_ = np.linalg.lstsq(X, y, rcond=None)
-        return {'yr': b[1], 'unworn': b[2], 'full': b[3]}
+        logp = np.log(r['soldPrice'].astype(np.float64))
+        yr = (r['year'] - 2020).astype(np.float64)
+        unworn = (r['cond2'] == 'Unworn').astype(np.float64)
+        full = (r['fs'] == 'Full').astype(np.float64)
+        # امتصاص تأثيرات المرجع الثابتة (fixed effects) بإزالة متوسط كل مجموعة مرجع.
+        # نظرية Frisch–Waugh–Lovell: معاملات yr/unworn/full مطابقة تماماً لانحدار
+        # الدمى الصريح (get_dummies)، لكن بدون مصفوفة بمئات الأعمدة — يوفّر مئات
+        # الميغابايت من الذاكرة المؤقتة عند الإقلاع.
+        g = r['referance']
+        def _demean(s):
+            return (s - s.groupby(g).transform('mean')).values
+        Y = _demean(logp)
+        X = np.column_stack([_demean(yr), _demean(unworn), _demean(full)])
+        b, *_ = np.linalg.lstsq(X, Y, rcond=None)
+        return {'yr': b[0], 'unworn': b[1], 'full': b[2]}
 
     def _coefs(self, brand):
         if brand not in self._coef_cache:
@@ -448,7 +467,9 @@ class WatchValuationEngine:
             'fair': round(fair), 'low': round(lo), 'high': round(hi),
             'n_sold': len(comps), 'n_recent': len(pool),
             'base': round(base), 'base_year': int(base_year),
-            'adjustments': notes, 'demand': demand, 'trend': trend, 'jump': jump,
+            'adjustments': notes, 'demand': demand,
+            'trend': (float(trend) if trend is not None else None),
+            'jump': (float(jump) if jump is not None else None),
             'market': market,
             'jump_date': (jump_date.strftime('%Y-%m') if jump_date is not None else None),
             'discontinued_year': disc_year,
