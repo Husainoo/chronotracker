@@ -1,0 +1,12 @@
+# Sensitive / secrets
+token.txt
+bot_memory.json
+
+# Python virtual environment
+venv/
+
+# Data files
+*.csv
+
+# macOS junk
+.DS_Store

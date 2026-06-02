@@ -1,0 +1,5 @@
+pandas==2.1.4
+numpy==1.26.3
+anthropic==0.21.0
+python-telegram-bot==20.4
+requests==2.31.0
