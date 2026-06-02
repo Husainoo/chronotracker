@@ -260,7 +260,7 @@ def handle_message(user_id: int, chat_id: int, text: str):
     # استدعاء Claude Opus 4.8
     try:
         response = client.messages.create(
-            model='claude-opus-4-20250514',  # Opus 4 (أحدث)
+            model='claude-opus-4-8',  # Opus 4.8
             max_tokens=1024,
             system="""أنت مستشار متخصص في الساعات الفاخرة (Rolex بشكل أساسي).
 - تتحدث بالعربية بطبيعية (خليجي)
@@ -302,7 +302,7 @@ def handle_message(user_id: int, chat_id: int, text: str):
             
             # استدعاء Claude مرة أخرى
             response = client.messages.create(
-                model='claude-opus-4-20250514',
+                model='claude-opus-4-8',
                 max_tokens=1024,
                 system="""أنت مستشار متخصص في الساعات الفاخرة (Rolex بشكل أساسي).
 - تتحدث بالعربية بطبيعية (خليجي)
