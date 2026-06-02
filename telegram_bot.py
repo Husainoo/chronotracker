@@ -116,18 +116,25 @@ def evaluate_watch(reference: str, year: int = 2020, condition: str = "Pre-owned
     """تقييم سعر الساعة."""
     try:
         result = ENGINE.evaluate(reference, year, condition, full_set)
-        
-        if 'error' in result:
-            return f"❌ {result['error']}"
-        
+
+        if not result.get('ok'):
+            return f"❌ {result.get('msg', 'تعذّر التقييم')}"
+
+        # آخر بيعة فعلية = أحدث إدراج مُباع في السجل
+        last_sale = next((s['price'] for s in result.get('recent_sales', [])
+                          if s.get('sold')), None)
+        last_sale_txt = f"${last_sale:,.0f}" if last_sale is not None else 'بلا بيانات'
+        trend = result.get('trend')
+        trend_txt = f"{trend*100:+.1f}%" if trend is not None else 'مستقر'
+
         output = f"""
 📊 تقييم {result['reference']}
 {'='*40}
-💰 السعر العادل: ${result['fair_price']:,.0f}
-📈 النطاق: ${result['low_price']:,.0f} — ${result['high_price']:,.0f}
+💰 السعر العادل: ${result['fair']:,.0f}
+📈 النطاق: ${result['low']:,.0f} — ${result['high']:,.0f}
 🎯 الثقة: {result['confidence']}
-📅 آخر بيعة: {result.get('last_sale_price', 'N/A')}
-🔄 الاتجاه: {result.get('trend', 'مستقر')}
+📅 آخر بيعة: {last_sale_txt}
+🔄 الاتجاه: {trend_txt}
 """
         return output
     except Exception as e:
