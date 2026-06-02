@@ -123,15 +123,15 @@ def evaluate_watch(reference: str, year: int = 2020, condition: str = "Pre-owned
         # آخر بيعة فعلية = أحدث إدراج مُباع في السجل
         last_sale = next((s['price'] for s in result.get('recent_sales', [])
                           if s.get('sold')), None)
-        last_sale_txt = f"${last_sale:,.0f}" if last_sale is not None else 'بلا بيانات'
+        last_sale_txt = f"{last_sale:,.0f} د.ك" if last_sale is not None else 'بلا بيانات'
         trend = result.get('trend')
         trend_txt = f"{trend*100:+.1f}%" if trend is not None else 'مستقر'
 
         output = f"""
 📊 تقييم {result['reference']}
 {'='*40}
-💰 السعر العادل: ${result['fair']:,.0f}
-📈 النطاق: ${result['low']:,.0f} — ${result['high']:,.0f}
+💰 السعر العادل: {result['fair']:,.0f} د.ك
+📈 النطاق: {result['low']:,.0f} — {result['high']:,.0f} د.ك
 🎯 الثقة: {result['confidence']}
 📅 آخر بيعة: {last_sale_txt}
 🔄 الاتجاه: {trend_txt}
@@ -151,7 +151,7 @@ def get_market_trend(reference: str) -> str:
         output = f"📈 آخر 5 بيعات لـ {reference}:\n"
         for _, row in sales.iterrows():
             date = row['priceDate'].strftime('%Y-%m-%d') if hasattr(row['priceDate'], 'strftime') else 'N/A'
-            output += f"• ${row['soldPrice']:,.0f} في {date}\n"
+            output += f"• {row['soldPrice']:,.0f} د.ك في {date}\n"
         
         return output
     except Exception as e:
