@@ -45,6 +45,10 @@ if not TELEGRAM_BOT_TOKEN or not ANTHROPIC_API_KEY:
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(message)s')
 logger = logging.getLogger(__name__)
 
+if not ALLOWED_USER_IDS:
+    logger.warning("⚠️  ALLOWED_USER_IDS فارغ — البوت سيرفض كل المستخدمين. "
+                   "أرسل رسالة، راجع اللوق لمعرفة user_id، ثم أضفه لمتغيّر البيئة.")
+
 # ====== محرك التسعير
 try:
     from watch_engine import WatchValuationEngine
@@ -333,42 +337,63 @@ def handle_message(user_id: int, chat_id: int, text: str):
         logger.error(f"❌ خطأ: {e}")
         send_message(chat_id, f"❌ خطأ: {str(e)[:100]}")
 
+def _redact(msg):
+    """يحذف التوكن من أي نص قبل تسجيله في اللوق."""
+    return str(msg).replace(TELEGRAM_BOT_TOKEN, '***') if TELEGRAM_BOT_TOKEN else str(msg)
+
 def send_message(chat_id: int, text: str):
-    """إرسال رسالة على Telegram."""
+    """إرسال رسالة على Telegram، مع كشف سبب الفشل الفعلي في اللوق (بدون التوكن)."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, json={'chat_id': chat_id, 'text': text})
-        logger.info(f"✓ رسالة مرسلة لـ {chat_id}")
+        resp = requests.post(url, json={'chat_id': chat_id, 'text': text}, timeout=15)
     except Exception as e:
-        logger.error(f"❌ فشل إرسال الرسالة: {e}")
+        logger.error(f"❌ تعذّر الاتصال بتيليجرام (إرسال): {_redact(e)}")
+        return False
+    try:
+        body = resp.json()
+    except Exception:
+        body = {}
+    if resp.ok and body.get('ok'):
+        logger.info(f"✓ رسالة مرسلة لـ {chat_id}")
+        return True
+    # تيليجرام رفض الطلب — نُظهر السبب (مثلاً توكن غلط 401، أو البوت محظور 403)
+    logger.error(f"❌ تيليجرام رفض الإرسال (HTTP {resp.status_code}): "
+                 f"{_redact(body.get('description') or resp.text[:150])}")
+    return False
 
 # ====== Polling (استقبال الرسائل)
 def poll_messages():
     """استقبال الرسائل من Telegram (Polling)."""
+    import time
     offset = 0
     logger.info("🤖 البوت يستمع على الرسائل...")
-    
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+
     while True:
         try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-            response = requests.get(url, params={'offset': offset, 'timeout': 30})
-            updates = response.json().get('result', [])
-            
-            for update in updates:
+            response = requests.get(url, params={'offset': offset, 'timeout': 30}, timeout=40)
+            data = response.json()
+            # كشف فشل getUpdates (مثلاً 409 تعارض webhook، أو 401 توكن غلط)
+            if not data.get('ok'):
+                logger.error(f"❌ getUpdates فشل (HTTP {response.status_code}): "
+                             f"{_redact(data.get('description') or response.text[:150])}")
+                time.sleep(5)
+                continue
+
+            for update in data.get('result', []):
                 offset = update['update_id'] + 1
-                
+
                 if 'message' in update:
                     msg = update['message']
                     user_id = msg['from']['id']
                     chat_id = msg['chat']['id']
                     text = msg.get('text', '').strip()
-                    
+
                     if text:
                         handle_message(user_id, chat_id, text)
-        
+
         except Exception as e:
-            logger.error(f"❌ خطأ في الـ polling: {e}")
-            import time
+            logger.error(f"❌ خطأ في الـ polling: {_redact(e)}")
             time.sleep(5)
 
 # ====== Main
