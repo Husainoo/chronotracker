@@ -311,6 +311,11 @@ HTML = r"""<!DOCTYPE html>
   .table-divider::before,.table-divider::after{content:'';flex:1;height:1px;
     background:linear-gradient(90deg,transparent,var(--gold),transparent)}
   .table-divider span{white-space:nowrap;color:var(--gold-soft)}
+  .show-all-btn{margin-top:10px;width:100%;background:var(--surface2);border:1px solid var(--line);
+    color:var(--gold-soft);border-radius:10px;padding:9px;font-family:inherit;font-size:13px;font-weight:600;cursor:pointer}
+  .show-all-btn:hover{border-color:rgba(201,162,39,.5)}
+  .collapsible{cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center}
+  .collapsible .chev{color:var(--muted);font-size:12px}
   .chart-wrap{margin-top:18px}
   .chart-wrap .ct{color:var(--muted);font-size:12px;font-weight:600;margin-bottom:10px}
   .chart{background:var(--surface2);border-radius:12px;padding:14px 8px 6px;position:relative}
@@ -360,7 +365,6 @@ HTML = r"""<!DOCTYPE html>
   <div class="head">
     <div class="mark">CHRONOTRACKER</div>
     <h1>مُسعّر الساعات</h1>
-    <p>تقييم مبني على المبيعات الفعلية</p>
     <a href="/favorites" style="display:inline-block;margin-top:12px;padding:8px 18px;border-radius:10px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.35);color:var(--gold-soft);text-decoration:none;font-size:13px;font-weight:600">⭐ ساعاتي المفضّلة</a>
     <a href="/browse" style="display:inline-block;margin-top:12px;margin-right:8px;padding:8px 18px;border-radius:10px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.35);color:var(--gold-soft);text-decoration:none;font-size:13px;font-weight:600">🖼️ تصفّح بالصور</a>
   </div>
@@ -582,6 +586,7 @@ $('go').onclick = async ()=>{
 
 function render(d){
   const out = $('out');
+  const hs=$('hotSec'); if(hs) hs.style.display='none';
   if(!d.ok){ out.innerHTML='<div class="empty">'+(d.msg||'لا توجد بيانات')+'</div>'; out.classList.add('show'); return; }
   const confClass = d.confidence==='عالية'?'high':d.confidence==='متوسطة'?'mid':'low';
   let badges='';
@@ -602,10 +607,6 @@ function render(d){
   let demand='';
   if(d.demand && d.demand.length>1){
     demand=`<div class="demand">${d.demand[0]==='upside'?'📈':'⚖️'} ${d.demand[1]}</div>`;
-  }
-  let narrative='';
-  if(d.narrative){
-    narrative=`<div class="narrative"><div class="nt">📋 ملخص التقييم</div>${d.narrative}</div>`;
   }
   function listingRow(s, withYear){
     return `<tr>
@@ -640,13 +641,19 @@ function render(d){
   // جدول كل السنوات (يُعرض آخر شي)
   let salesAll='';
   if(d.recent_all && d.recent_all.length){
-    const rows = d.recent_all.map(s=>listingRow(s,true)).join('');
+    const rows = d.recent_all.map((s,i)=>{
+      const tr = listingRow(s,true);
+      return i<8 ? tr : tr.replace('<tr>','<tr class="more-row" style="display:none">');
+    }).join('');
+    const moreBtn = d.recent_all.length>8
+      ? `<button class="show-all-btn" onclick="showAllRows(this)">اعرض الكل (${d.recent_all.length})</button>` : '';
     salesAll=`<div class="sales">
         <div class="st">📜 كل السنوات — آخر ${d.recent_all.length} إدراج</div>
         <table>
           <thead><tr><th>التاريخ</th><th>سنة الصنع</th><th>السعر</th><th>النتيجة</th><th>الحالة</th><th>الطقم</th><th>الدولة</th><th>ملاحظات</th><th>المصدر</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
+        ${moreBtn}
         <div style="color:var(--muted);font-size:11px;margin-top:8px">السعر للمباعة = سعر البيع · لغير المباعة = أعلى مزايدة وصلتها</div>
       </div>`;
   }
@@ -655,8 +662,8 @@ function render(d){
     const rows = Object.entries(d.specs).map(([k,v])=>
       `<tr><td style="color:var(--muted);width:42%">${k}</td><td style="font-weight:500">${v}</td></tr>`).join('');
     specs=`<div class="sales">
-        <div class="st">🔎 مواصفات الموديل</div>
-        <table class="specs">${rows}</table>
+        <div class="st collapsible" onclick="toggleCollapse(this)">🔎 مواصفات الموديل <span class="chev">▾</span></div>
+        <table class="specs" style="display:none">${rows}</table>
       </div>`;
   }
   const title = `${d.brand} ${d.model}` + (d.nick?` — ${d.nick}`:'');
@@ -751,7 +758,6 @@ function render(d){
     ${badges?'<div class="badges">'+badges+'</div>':''}
     <div class="helpbox" id="help-trend"><div class="ht">الترند</div>اتجاه السعر مؤخراً: يقارن متوسط بيعات آخر 30 يوم بمتوسط الـ 30-90 يوم اللي قبلها، لنفس الحالة. ▲ موجب = السعر صاعد، ▼ سالب = هابط. يجاوب: «وين رايح السعر الآن؟»</div>
     <div class="helpbox" id="help-jump"><div class="ht">القفزة السعرية</div>تغيّر مفاجئ ومستدام في السعر (±15% أو أكثر) خلال آخر سنة. لو اكتُشفت قفزة، التقييم يُحسب من المبيعات بعد القفزة فقط — يتجاهل الأسعار القديمة اللي ما عادت تعكس السوق.</div>
-    ${narrative}
     ${notes}
     ${demand}
     ${salesAll?'<div class="table-divider"><span>سجل كل السنوات ⬇</span></div>'+salesAll:''}
@@ -809,8 +815,19 @@ function newSearch(){
   $('q').value = '';
   $('go').disabled = true;
   fillYears([]);
+  const hs=$('hotSec'); if(hs && $('hotTrack').children.length) hs.style.display='block';
   window.scrollTo({top:0, behavior:'smooth'});
   setTimeout(()=>$('q').focus(), 300);
+}
+
+function showAllRows(btn){
+  btn.closest('.sales').querySelectorAll('.more-row').forEach(tr=>tr.style.display='');
+  btn.style.display='none';
+}
+function toggleCollapse(el){
+  const body = el.nextElementSibling, open = body.style.display==='none';
+  body.style.display = open ? '' : 'none';
+  const ch = el.querySelector('.chev'); if(ch) ch.textContent = open ? '▴' : '▾';
 }
 
 function toast(msg){
