@@ -77,22 +77,16 @@ def boot():
     SEARCH_INDEX = index
     _REF_INFO = {m['ref']: m['label'] for m in SEARCH_INDEX}
 
-    # أكثر 30 ساعة مبيعاً + نسبة تغيّر السعر (متوسط النصف الأحدث مقابل الأقدم)
+    # أكثر 30 ساعة مبيعاً + عدد مبيعات آخر 30 يوم (نسبةً لأحدث تاريخ في البيانات)
     hot = []
     sold = ENGINE.sold
+    recent_cut = ENGINE.ref_date - pd.Timedelta(days=30)
     for m in SEARCH_INDEX[:30]:
         ref = m['ref']
-        g = sold[sold['referance'] == ref].sort_values('priceDate')
-        prices = [float(x) for x in g['soldPrice'].tolist() if x and x > 0]
-        change = None
-        if len(prices) >= 4:
-            h = len(prices) // 2
-            older = sum(prices[:h]) / h
-            recent = sum(prices[h:]) / (len(prices) - h)
-            if older > 0:
-                change = round((recent / older - 1) * 100)
+        g = sold[sold['referance'] == ref]
+        last30 = int((g['priceDate'] >= recent_cut).sum())
         hot.append({'ref': ref, 'image': image_file_for(ref),
-                    'n': m['n'], 'change': change})
+                    'n': m['n'], 'last30': last30})
     HOTTEST = hot
 
     print(f"✓ جاهز — {len(ENGINE.sold):,} صفقة، {len(SEARCH_INDEX):,} موديل قابل للتسعير")
@@ -218,11 +212,13 @@ HTML = r"""<!DOCTYPE html>
   .btn-go:disabled{opacity:.4;cursor:not-allowed}
   .hot-sec{margin-bottom:18px}
   .hot-title{color:var(--gold-soft);font-size:13px;font-weight:600;margin-bottom:10px;display:flex;gap:6px;align-items:center}
-  .hot-track{display:flex;gap:12px;overflow-x:auto;padding:4px 2px 10px;scroll-behavior:smooth;
-    -webkit-overflow-scrolling:touch;scrollbar-width:thin}
+  .hot-track{display:grid;grid-auto-flow:column;grid-template-rows:repeat(2,auto);
+    gap:12px;overflow-x:auto;overflow-y:hidden;padding:4px 2px 10px;
+    -webkit-overflow-scrolling:touch;touch-action:pan-x;scrollbar-width:thin;cursor:grab}
+  .hot-track.dragging{cursor:grabbing}
   .hot-track::-webkit-scrollbar{height:6px}
   .hot-track::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
-  .hot-card{flex:0 0 auto;width:140px;background:var(--surface);border:1px solid var(--line);
+  .hot-card{width:140px;background:var(--surface);border:1px solid var(--line);
     border-radius:14px;overflow:hidden;position:relative;transition:border-color .2s}
   .hot-card:hover{border-color:rgba(201,162,39,.5)}
   .hot-img{width:100%;aspect-ratio:1;background:#fff;display:flex;align-items:center;
@@ -232,10 +228,8 @@ HTML = r"""<!DOCTYPE html>
   .hot-ref{padding:9px 6px;text-align:center;font-family:'Space Mono',monospace;color:var(--gold-soft);
     font-size:13px;font-weight:700;border-top:1px solid var(--line);cursor:copy;user-select:all}
   .hot-ref:hover{background:rgba(201,162,39,.08)}
-  .hot-badge{position:absolute;top:8px;right:8px;font-size:11px;font-weight:700;padding:3px 7px;
-    border-radius:7px;font-family:'Space Mono',monospace}
-  .hot-badge.up{background:rgba(63,178,127,.9);color:#06281c}
-  .hot-badge.down{background:rgba(224,98,94,.9);color:#2a0b0a}
+  .hot-badge{position:absolute;top:8px;right:8px;font-size:11px;font-weight:700;padding:3px 8px;
+    border-radius:7px;font-family:'Space Mono',monospace;background:var(--gold);color:#1a1a1a}
   .result-card{display:none}
   .result-card.show{display:block;animation:fade .3s ease}
   @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
@@ -319,6 +313,7 @@ HTML = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
+<a href="/" id="floatBack" style="position:fixed;top:16px;right:16px;z-index:100;display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:11px;background:rgba(201,162,39,.95);color:#0e0e10;text-decoration:none;font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;font-weight:700;box-shadow:0 4px 16px rgba(0,0,0,.4)">🏠 الرئيسية</a>
 <div class="wrap">
   <div class="head">
     <div class="mark">CHRONOTRACKER</div>
@@ -830,8 +825,8 @@ async function loadHottest(){
     if(!list || !list.length) return;
     const t = $('hotTrack');
     t.innerHTML = list.map(w=>{
-      const badge = (w.change!=null)
-        ? `<div class="hot-badge ${w.change>=0?'up':'down'}">${w.change>=0?'+':''}${w.change}%</div>` : '';
+      const badge = (w.last30)
+        ? `<div class="hot-badge" title="مبيعات آخر 30 يوم">${w.last30}</div>` : '';
       const img = w.image
         ? `<img src="${w.image}" alt="${w.ref}" onerror="this.parentElement.innerHTML='<span class=\\'hot-noimg\\'>${w.ref}</span>'">`
         : `<span class="hot-noimg">${w.ref}</span>`;
@@ -848,7 +843,14 @@ async function loadHottest(){
 function autoScrollHot(t){
   let paused=false;
   ['mouseenter','touchstart'].forEach(ev=>t.addEventListener(ev,()=>paused=true,{passive:true}));
-  ['mouseleave','touchend'].forEach(ev=>t.addEventListener(ev,()=>paused=false,{passive:true}));
+  ['mouseleave','touchend','touchcancel'].forEach(ev=>t.addEventListener(ev,()=>paused=false,{passive:true}));
+  // سحب بالماوس (ديسكتوب)
+  let down=false, sx=0, ss=0;
+  t.addEventListener('mousedown',e=>{ down=true; paused=true; t.classList.add('dragging');
+    sx=e.pageX; ss=t.scrollLeft; e.preventDefault(); });
+  window.addEventListener('mousemove',e=>{ if(down) t.scrollLeft = ss - (e.pageX - sx); });
+  window.addEventListener('mouseup',()=>{ if(down){ down=false; paused=false; t.classList.remove('dragging'); } });
+  // تحرّك تلقائي
   setInterval(()=>{
     if(paused) return;
     if(t.scrollLeft + t.clientWidth >= t.scrollWidth - 1) t.scrollLeft = 0;
