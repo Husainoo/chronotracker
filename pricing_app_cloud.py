@@ -311,6 +311,11 @@ HTML = r"""<!DOCTYPE html>
   .table-divider::before,.table-divider::after{content:'';flex:1;height:1px;
     background:linear-gradient(90deg,transparent,var(--gold),transparent)}
   .table-divider span{white-space:nowrap;color:var(--gold-soft)}
+  .sec-div{margin:24px 0;height:2px;border:0;border-radius:2px;
+    background:linear-gradient(90deg,transparent,rgba(201,162,39,.55),transparent)}
+  .more-btn{margin-top:10px;width:100%;background:rgba(201,162,39,.14);border:1px solid rgba(201,162,39,.45);
+    color:var(--gold-soft);border-radius:10px;padding:11px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer}
+  .more-btn:hover{background:rgba(201,162,39,.24)}
   .show-all-btn{margin-top:10px;width:100%;background:var(--surface2);border:1px solid var(--line);
     color:var(--gold-soft);border-radius:10px;padding:9px;font-family:inherit;font-size:13px;font-weight:600;cursor:pointer}
   .show-all-btn:hover{border-color:rgba(201,162,39,.5)}
@@ -561,8 +566,11 @@ function phMonthly(deals){
 let PH_DEALS=[];
 function phFilter(){
   const period=(document.querySelector('#phPeriod button.on')?.dataset.v)||'all';
-  const year=$('phYear').value;
-  let ds = year==='all'?PH_DEALS:PH_DEALS.filter(d=>String(d.year)===year);
+  const year=$('phYear').value, cond=$('phCond').value, fset=$('phFs').value;
+  let ds = PH_DEALS;
+  if(year!=='all') ds=ds.filter(d=>String(d.year)===year);
+  if(cond!=='all') ds=ds.filter(d=>d.cond===cond);
+  if(fset!=='all') ds=ds.filter(d=>d.fs===fset);
   if(period!=='all' && PH_DEALS.length){
     const maxd=PH_DEALS.reduce((a,d)=>d.date>a?d.date:a,PH_DEALS[0].date);
     const cut=new Date(maxd); cut.setMonth(cut.getMonth()-(period==='6m'?6:period==='1y'?12:24));
@@ -597,7 +605,7 @@ async function initPriceHistory(ref, fallbackHist){
     document.querySelectorAll('#phPeriod button').forEach(x=>x.classList.remove('on'));
     b.classList.add('on'); phDraw();
   });
-  sel.onchange=phDraw;
+  sel.onchange=phDraw; $('phCond').onchange=phDraw; $('phFs').onchange=phDraw;
   phDraw();
 }
 
@@ -649,11 +657,6 @@ function render(d){
   if(d.jump!=null && d.jump!=='-'){
     const dir=d.jump>0?'ارتفاع':'انخفاض';
     badges+=`<span class="badge jump">⚡ قفزة: ${dir} ${Math.abs(d.jump*100).toFixed(0)}% <span class="help" onclick="toggleHelp('jump')">؟</span></span>`;
-  }
-  let notes='';
-  if(d.adjustments && d.adjustments.length){
-    notes=`<div class="notes"><div class="t">التعديلات (من أساس ${fmt(d.base)} لموديل ~${d.base_year}):</div><ul>`
-      + d.adjustments.map(a=>`<li>${a}</li>`).join('') + '</ul></div>';
   }
   let demand='';
   if(d.demand && d.demand.length>1){
@@ -710,11 +713,14 @@ function render(d){
   }
   let specs='';
   if(d.specs && Object.keys(d.specs).length){
-    const rows = Object.entries(d.specs).map(([k,v])=>
-      `<tr><td style="color:var(--muted);width:42%">${k}</td><td style="font-weight:500">${v}</td></tr>`).join('');
+    const sp=d.specs, ALWAYS=['المقاس','الموديل','المرجع'];
+    const row=([k,v],hid)=>`<tr${hid?' class="spec-more" style="display:none"':''}><td style="color:var(--muted);width:42%">${k}</td><td style="font-weight:500">${v}</td></tr>`;
+    const base=ALWAYS.filter(k=>k in sp).map(k=>row([k,sp[k]],false)).join('');
+    const more=Object.entries(sp).filter(([k])=>!ALWAYS.includes(k)).map(e=>row(e,true)).join('');
     specs=`<div class="sales">
-        <div class="st collapsible" onclick="toggleCollapse(this)">🔎 مواصفات الموديل <span class="chev">▾</span></div>
-        <table class="specs" style="display:none">${rows}</table>
+        <div class="st">🔎 مواصفات الموديل</div>
+        <table class="specs"><tbody>${base}${more}</tbody></table>
+        ${more?`<button class="more-btn" onclick="toggleSpecs(this)">المزيد ▾</button>`:''}
       </div>`;
   }
   const title = `${d.brand} ${d.model}` + (d.nick?` — ${d.nick}`:'');
@@ -734,6 +740,16 @@ function render(d){
           <button data-v="2y">سنتين</button><button data-v="all" class="on">الكل</button>
         </div>
         <select id="phYear"><option value="all">كل السنوات</option></select>
+        <select id="phCond">
+          <option value="all">الحالة: الكل</option>
+          <option value="مستخدمة">مستخدمة</option>
+          <option value="غير مستخدمة">غير مستخدمة</option>
+        </select>
+        <select id="phFs">
+          <option value="all">الطقم: الكل</option>
+          <option value="Full Set">فل ست</option>
+          <option value="ناقص">غير كامل</option>
+        </select>
       </div>
       <div id="phChart"></div>
       <div class="ph-count" id="phCount"></div>
@@ -774,6 +790,7 @@ function render(d){
       </div>
       <div class="helpbox" id="help-market"><div class="ht">حرارة السوق</div><b>نسبة البيع</b> = كم ساعة تبيع فعلاً من المعروض (باعت ÷ الكل) لنفس الحالة. التصنيفات:<br><span style="color:#f5a3a3">🔥 سوق حار (70%+):</span> طلب قوي، بيع سريع، السعر يميل للصعود.<br><span style="color:#ecc964">⚖️ سوق متوازن (45-70%):</span> العرض والطلب متقاربان.<br><span style="color:#9ec7f0">❄️ سوق بطيء (أقل من 45%):</span> عرض زائد، فرصة شراء للصبور.</div>`;
   }
+  const SD='<div class="sec-div"></div>';
   out.innerHTML = `
     <div style="display:flex;justify-content:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
       <button onclick="newSearch()" style="display:inline-flex;align-items:center;gap:7px;padding:8px 18px;border-radius:10px;background:var(--surface2);border:1px solid var(--line);color:var(--text);font-family:inherit;font-size:13px;font-weight:600;cursor:pointer">↑ بحث جديد</button>
@@ -807,10 +824,11 @@ function render(d){
         </div>
       </div>
     </div>
-    ${marketHtml}
-    ${salesYear}
-    ${specs}
-    ${chart}
+    ${marketHtml?SD+marketHtml:''}
+    ${salesYear?SD+salesYear:''}
+    ${specs?SD+specs:''}
+    ${SD}${chart}
+    ${SD}
     <div class="stats">
       <div class="stat"><div class="k">عدد الصفقات <span class="help" onclick="toggleHelp('n')">؟</span></div><div class="v">${fmt(d.n_sold)}</div></div>
       <div class="stat"><div class="k">مستوى الثقة <span class="help" onclick="toggleHelp('conf')">؟</span></div><div class="v"><span class="conf ${confClass}">${d.confidence}</span></div></div>
@@ -820,8 +838,7 @@ function render(d){
     ${badges?'<div class="badges">'+badges+'</div>':''}
     <div class="helpbox" id="help-trend"><div class="ht">الترند</div>اتجاه السعر مؤخراً: يقارن متوسط بيعات آخر 30 يوم بمتوسط الـ 30-90 يوم اللي قبلها، لنفس الحالة. ▲ موجب = السعر صاعد، ▼ سالب = هابط. يجاوب: «وين رايح السعر الآن؟»</div>
     <div class="helpbox" id="help-jump"><div class="ht">القفزة السعرية</div>تغيّر مفاجئ ومستدام في السعر (±15% أو أكثر) خلال آخر سنة. لو اكتُشفت قفزة، التقييم يُحسب من المبيعات بعد القفزة فقط — يتجاهل الأسعار القديمة اللي ما عادت تعكس السوق.</div>
-    ${notes}
-    ${demand}
+    ${demand?SD+demand:''}
     ${salesAll?'<div class="table-divider"><span>سجل كل السنوات ⬇</span></div>'+salesAll:''}
   `;
   out.classList.add('show');
@@ -890,6 +907,12 @@ function toggleCollapse(el){
   const body = el.nextElementSibling, open = body.style.display==='none';
   body.style.display = open ? '' : 'none';
   const ch = el.querySelector('.chev'); if(ch) ch.textContent = open ? '▴' : '▾';
+}
+function toggleSpecs(btn){
+  const more=btn.parentElement.querySelectorAll('.spec-more'); if(!more.length) return;
+  const open=more[0].style.display==='none';
+  more.forEach(r=>r.style.display=open?'':'none');
+  btn.innerHTML=open?'أقل ▴':'المزيد ▾';
 }
 
 function toast(msg){
@@ -1216,9 +1239,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                 dates = g['priceDate'].dt.strftime('%Y-%m-%d').tolist()
                 prices = g['soldPrice'].tolist()
                 years = g['year'].tolist()
-                out = [{'date': d, 'price': int(round(p)),
-                        'year': (int(y) if (y == y) else None)}   # y==y يكشف NaN
-                       for d, p, y in zip(dates, prices, years) if p and p > 0]
+                conds = g['cond2'].tolist()
+                fses = g['fs'].tolist()
+                out = [{'date': dt, 'price': int(round(p)),
+                        'year': (int(y) if (y == y) else None),   # y==y يكشف NaN
+                        'cond': ('غير مستخدمة' if str(c).startswith('Unworn') else 'مستخدمة'),
+                        'fs': ('Full Set' if str(f).startswith('Full') else 'ناقص')}
+                       for dt, p, y, c, f in zip(dates, prices, years, conds, fses) if p and p > 0]
                 self._send(200, json.dumps(out, ensure_ascii=False))
             except Exception:
                 self._send(200, json.dumps([], ensure_ascii=False))
