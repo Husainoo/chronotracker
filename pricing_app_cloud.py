@@ -36,10 +36,14 @@ SEARCH_INDEX = []
 _years_by_ref = {}
 _REF_INFO = {}
 HOTTEST = []
+BROWSE_BRANDS = []
+BROWSE_FAMILIES = {}
+BROWSE_REFS = {}
 
 def boot():
     """تحميل المحرك وبناء فهرس البحث. يُستدعى بعد ربط المنفذ مباشرة."""
     global ENGINE, SEARCH_INDEX, _years_by_ref, _REF_INFO, HOTTEST
+    global BROWSE_BRANDS, BROWSE_FAMILIES, BROWSE_REFS
     print("جاري تحميل المحرك والبيانات ...")
     ENGINE = WatchValuationEngine(csv_path=CSV_PATH, discontinued_csv=DISC_CSV)
 
@@ -89,6 +93,40 @@ def boot():
         hot.append({'ref': ref, 'image': image_file_for(ref),
                     'n': (m['n'] if m else None), 'last30': int(cnt), 'rank': rank})
     HOTTEST = hot
+
+    # تصفّح بالصور: ماركة (brand) ← عائلة (model) ← مرجع (referance)، مرتّبة بالأكثر مبيعاً
+    def _first_img(lst):
+        for x in lst:
+            if x['image']:
+                return x['image']
+        return None
+    fam_refs, brand_fams, brand_sales, fam_sales = {}, {}, {}, {}
+    for m in SEARCH_INDEX:                      # مرتّب تنازلياً بـ n
+        b = (m['brand'] or '').strip()
+        fam = (m['model'] or '').strip()
+        if not b or b.lower() == 'nan' or not fam or fam.lower() == 'nan':
+            continue
+        key = (b, fam)
+        fam_refs.setdefault(key, []).append({'ref': m['ref'], 'image': image_file_for(m['ref'])})
+        brand_fams.setdefault(b, [])
+        if fam not in brand_fams[b]:
+            brand_fams[b].append(fam)
+        brand_sales[b] = brand_sales.get(b, 0) + m['n']
+        fam_sales[key] = fam_sales.get(key, 0) + m['n']
+    BROWSE_BRANDS = []
+    for b in sorted(brand_fams, key=lambda x: brand_sales.get(x, 0), reverse=True):
+        img = None
+        for fam in brand_fams[b]:
+            img = _first_img(fam_refs[(b, fam)])
+            if img:
+                break
+        BROWSE_BRANDS.append({'brand': b, 'image': img, 'families': len(brand_fams[b])})
+    BROWSE_FAMILIES = {}
+    for b in brand_fams:
+        fams = sorted(brand_fams[b], key=lambda f: fam_sales.get((b, f), 0), reverse=True)
+        BROWSE_FAMILIES[b] = [{'family': f, 'image': _first_img(fam_refs[(b, f)]),
+                               'versions': len(fam_refs[(b, f)])} for f in fams]
+    BROWSE_REFS = dict(fam_refs)
 
     print(f"✓ جاهز — {len(ENGINE.sold):,} صفقة، {len(SEARCH_INDEX):,} موديل قابل للتسعير")
 
@@ -324,6 +362,7 @@ HTML = r"""<!DOCTYPE html>
     <h1>مُسعّر الساعات</h1>
     <p>تقييم مبني على المبيعات الفعلية</p>
     <a href="/favorites" style="display:inline-block;margin-top:12px;padding:8px 18px;border-radius:10px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.35);color:var(--gold-soft);text-decoration:none;font-size:13px;font-weight:600">⭐ ساعاتي المفضّلة</a>
+    <a href="/browse" style="display:inline-block;margin-top:12px;margin-right:8px;padding:8px 18px;border-radius:10px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.35);color:var(--gold-soft);text-decoration:none;font-size:13px;font-weight:600">🖼️ تصفّح بالصور</a>
   </div>
 
   <div class="hot-sec" id="hotSec" style="display:none">
@@ -974,6 +1013,70 @@ loadFavs();
 </html>"""
 
 
+BROWSE_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChronoTracker — تصفّح بالصور</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{--bg:#0e0e10;--surface:#19191d;--line:#2e2e36;--gold:#c9a227;--gold-soft:#e8c860;--text:#ececf0;--muted:#8a8a95}
+  body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans Arabic',sans-serif;min-height:100vh;line-height:1.6;padding:24px 16px}
+  .wrap{max-width:880px;margin:0 auto}
+  .home-btn{position:fixed;top:16px;right:16px;z-index:100;display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:11px;background:rgba(201,162,39,.95);color:#0e0e10;text-decoration:none;font-size:14px;font-weight:700;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+  .head{text-align:center;margin-bottom:18px;padding-top:16px}
+  .head .mark{font-family:'Space Mono',monospace;color:var(--gold);font-size:13px;letter-spacing:2px}
+  .head h1{font-size:24px;font-weight:700;margin:6px 0}
+  .crumb{min-height:22px}
+  .crumb a{color:var(--gold-soft);text-decoration:none;font-size:13px;font-weight:600}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:16px;margin-top:8px}
+  .bcard{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;cursor:pointer;transition:all .2s;text-decoration:none;display:block}
+  .bcard:hover{border-color:rgba(201,162,39,.5);transform:translateY(-3px)}
+  .bcard .imgbox{width:100%;aspect-ratio:1;background:#fff;display:flex;align-items:center;justify-content:center;padding:10px}
+  .bcard .imgbox img{max-width:100%;max-height:100%;object-fit:contain}
+  .bcard .ttl{padding:10px 8px 2px;text-align:center;color:var(--text);font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bcard .ttl.gold{font-family:'Space Mono',monospace;color:var(--gold-soft);font-weight:700}
+  .bcard .sub{padding:0 8px 10px;text-align:center;color:var(--muted);font-size:11px}
+  .empty{text-align:center;color:var(--muted);padding:40px 20px;font-size:14px}
+  .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:30px;font-family:'Space Mono',monospace}
+</style></head><body>
+<a href="/" class="home-btn">🏠 الرئيسية</a>
+<div class="wrap">
+  <div class="head"><div class="mark">CHRONOTRACKER</div><h1 id="title">تصفّح بالصور</h1><div id="crumb" class="crumb"></div></div>
+  <div id="grid"></div>
+  <div class="foot">ChronoTracker</div>
+</div>
+<script>
+var SKETCH = '<svg viewBox="0 0 60 60" width="46" height="46" aria-hidden="true" fill="none" stroke="#a8a8b0" stroke-width="2"><rect x="25" y="6" width="10" height="11" rx="2"/><rect x="25" y="43" width="10" height="11" rx="2"/><circle cx="30" cy="30" r="19"/><circle cx="30" cy="30" r="13"/><line x1="30" y1="30" x2="30" y2="21" stroke-linecap="round"/><line x1="30" y1="30" x2="37" y2="31" stroke-linecap="round"/></svg>';
+const $=id=>document.getElementById(id);
+const P=new URLSearchParams(location.search), brand=P.get('brand'), family=P.get('family');
+function card(href,img,title,sub,gold){
+  const im = img
+    ? `<img src="${img}" alt="${title}" onerror="this.parentElement.innerHTML=SKETCH">`
+    : SKETCH;
+  return `<a class="bcard" href="${href}"><div class="imgbox">${im}</div><div class="ttl ${gold?'gold':''}">${title}</div>${sub?`<div class="sub">${sub}</div>`:''}</a>`;
+}
+async function load(u){const r=await fetch(u);return await r.json();}
+async function renderBrands(){
+  $('title').textContent='تصفّح بالصور — كل الماركات'; $('crumb').innerHTML='';
+  const l=await load('/api/brands'); $('grid').className='grid';
+  $('grid').innerHTML=l.map(b=>card('/browse?brand='+encodeURIComponent(b.brand),b.image,b.brand,b.families+' عائلة',false)).join('');
+}
+async function renderFamilies(b){
+  $('title').textContent=b; $('crumb').innerHTML='<a href="/browse">← كل الماركات</a>';
+  const l=await load('/api/families?brand='+encodeURIComponent(b)); $('grid').className='grid';
+  $('grid').innerHTML=l.map(f=>card('/browse?brand='+encodeURIComponent(b)+'&family='+encodeURIComponent(f.family),f.image,f.family,f.versions+' إصدار',false)).join('');
+}
+async function renderRefs(b,f){
+  $('title').textContent=b+' · '+f;
+  $('crumb').innerHTML='<a href="/browse?brand='+encodeURIComponent(b)+'">← كل عائلات '+b+'</a>';
+  const l=await load('/api/refs?brand='+encodeURIComponent(b)+'&family='+encodeURIComponent(f)); $('grid').className='grid';
+  if(!l.length){ $('grid').className=''; $('grid').innerHTML='<div class="empty">لا توجد إصدارات.</div>'; return; }
+  $('grid').innerHTML=l.map(w=>card('/?ref='+encodeURIComponent(w.ref),w.image,w.ref,'',true)).join('');
+}
+if(family&&brand)renderRefs(brand,family); else if(brand)renderFamilies(brand); else renderBrands();
+</script></body></html>"""
+
+
 # ========================
 # HTTP Server
 # ========================
@@ -1026,6 +1129,18 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(results, ensure_ascii=False))
         elif path == '/api/hottest':
             self._send(200, json.dumps(HOTTEST, ensure_ascii=False))
+        elif path == '/browse' or path == '/browse.html':
+            self._send(200, BROWSE_HTML, 'text/html')
+        elif path == '/api/brands':
+            self._send(200, json.dumps(BROWSE_BRANDS, ensure_ascii=False))
+        elif path == '/api/families':
+            b = parse_qs(u.query).get('brand', [''])[0]
+            self._send(200, json.dumps(BROWSE_FAMILIES.get(b, []), ensure_ascii=False))
+        elif path == '/api/refs':
+            q = parse_qs(u.query)
+            b = q.get('brand', [''])[0]
+            f = q.get('family', [''])[0]
+            self._send(200, json.dumps(BROWSE_REFS.get((b, f), []), ensure_ascii=False))
         elif path == '/api/evaluate':
             p = parse_qs(u.query)
             ref = p.get('ref', [''])[0]
