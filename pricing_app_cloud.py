@@ -77,16 +77,17 @@ def boot():
     SEARCH_INDEX = index
     _REF_INFO = {m['ref']: m['label'] for m in SEARCH_INDEX}
 
-    # أكثر 30 ساعة مبيعاً + عدد مبيعات آخر 30 يوم (نسبةً لأحدث تاريخ في البيانات)
-    hot = []
+    # أكثر 30 ساعة مبيعاً في آخر 30 يوم (نسبةً لأحدث تاريخ في البيانات)
     sold = ENGINE.sold
     recent_cut = ENGINE.ref_date - pd.Timedelta(days=30)
-    for m in SEARCH_INDEX[:30]:
-        ref = m['ref']
-        g = sold[sold['referance'] == ref]
-        last30 = int((g['priceDate'] >= recent_cut).sum())
+    recent_counts = sold[sold['priceDate'] >= recent_cut]['referance'].value_counts()
+    by_ref = {m['ref']: m for m in SEARCH_INDEX}
+    hot = []
+    for rank, (ref, cnt) in enumerate(recent_counts.head(30).items(), 1):
+        ref = str(ref)
+        m = by_ref.get(ref)
         hot.append({'ref': ref, 'image': image_file_for(ref),
-                    'n': m['n'], 'last30': last30})
+                    'n': (m['n'] if m else None), 'last30': int(cnt), 'rank': rank})
     HOTTEST = hot
 
     print(f"✓ جاهز — {len(ENGINE.sold):,} صفقة، {len(SEARCH_INDEX):,} موديل قابل للتسعير")
@@ -228,6 +229,9 @@ HTML = r"""<!DOCTYPE html>
   .hot-ref{padding:9px 6px;text-align:center;font-family:'Space Mono',monospace;color:var(--gold-soft);
     font-size:13px;font-weight:700;border-top:1px solid var(--line);cursor:copy;user-select:all}
   .hot-ref:hover{background:rgba(201,162,39,.08)}
+  .hot-rank{position:absolute;top:8px;left:8px;font-size:11px;font-weight:700;
+    font-family:'Space Mono',monospace;color:var(--gold-soft);
+    background:rgba(14,14,16,.72);padding:2px 6px;border-radius:7px;z-index:1}
   .hot-badge{position:absolute;top:8px;right:8px;font-size:11px;font-weight:700;padding:3px 8px;
     border-radius:7px;font-family:'Space Mono',monospace;background:var(--gold);color:#1a1a1a}
   .result-card{display:none}
@@ -323,7 +327,7 @@ HTML = r"""<!DOCTYPE html>
   </div>
 
   <div class="hot-sec" id="hotSec" style="display:none">
-    <div class="hot-title">🔥 الأكثر سخونة — أكثر ٣٠ ساعة مبيعاً</div>
+    <div class="hot-title">🔥 الأكثر سخونة — أكثر ٣٠ ساعة مبيعاً آخر شهر</div>
     <div class="hot-track" id="hotTrack"></div>
   </div>
 
@@ -825,12 +829,14 @@ async function loadHottest(){
     if(!list || !list.length) return;
     const t = $('hotTrack');
     t.innerHTML = list.map(w=>{
+      const rank  = `<div class="hot-rank">#${w.rank}</div>`;
       const badge = (w.last30)
         ? `<div class="hot-badge" title="مبيعات آخر 30 يوم">${w.last30}</div>` : '';
       const img = w.image
         ? `<img src="${w.image}" alt="${w.ref}" onerror="this.parentElement.innerHTML='<span class=\\'hot-noimg\\'>${w.ref}</span>'">`
         : `<span class="hot-noimg">${w.ref}</span>`;
       return `<div class="hot-card">
+                ${rank}
                 ${badge}
                 <div class="hot-img" onclick="openHot('${w.ref}')">${img}</div>
                 <div class="hot-ref" title="اضغط للنسخ" onclick="copyRef(event,'${w.ref}')">${w.ref}</div>
