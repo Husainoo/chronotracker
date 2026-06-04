@@ -132,6 +132,8 @@ def boot():
     # قائمة "الأكثر نزولاً" — مُولّدة مسبقاً في deals.json (وسطاء سعر البيع)
     try:
         DEALS = json.load(open('deals.json', encoding='utf-8')) if os.path.exists('deals.json') else []
+        for _d in DEALS:                       # نُثري بصورة المرجع (نفس مصدر التصفّح/النتيجة)
+            _d['image'] = image_file_for(_d.get('ref', ''))
     except Exception:
         DEALS = []
 
@@ -393,7 +395,7 @@ HTML = r"""<!DOCTYPE html>
     <div class="hot-track" id="hotTrack"></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="searchCard">
     <label>الموديل (ابحث بالرقم أو الاسم أو اللقب)</label>
     <div class="search-box">
       <input type="text" id="q" placeholder="مثال: Pepsi أو 126710 أو Daytona" autocomplete="off">
@@ -655,6 +657,7 @@ function render(d){
   const out = $('out');
   const hs=$('hotSec'); if(hs) hs.style.display='none';
   if(!d.ok){ out.innerHTML='<div class="empty">'+(d.msg||'لا توجد بيانات')+'</div>'; out.classList.add('show'); return; }
+  const sc=$('searchCard'); if(sc) sc.style.display='none';   // نخفي نموذج البحث مع ظهور النتيجة
   const confClass = d.confidence==='عالية'?'high':d.confidence==='متوسطة'?'mid':'low';
   let badges='';
   if(d.trend!=null && d.trend!=='-'){
@@ -802,7 +805,10 @@ function render(d){
   out.innerHTML = `
     <div style="display:flex;justify-content:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
       <button onclick="newSearch()" style="display:inline-flex;align-items:center;gap:7px;padding:8px 18px;border-radius:10px;background:var(--surface2);border:1px solid var(--line);color:var(--text);font-family:inherit;font-size:13px;font-weight:600;cursor:pointer">↑ بحث جديد</button>
-      <a href="/favorites" style="display:inline-flex;align-items:center;gap:7px;padding:8px 18px;border-radius:10px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.4);color:#e8c860;text-decoration:none;font-family:inherit;font-size:13px;font-weight:600">⭐ المفضّلة</a>
+      <button id="favBtn" data-ref="${d.reference}" onclick="toggleFav(this)"
+        style="display:inline-flex;align-items:center;gap:7px;padding:8px 18px;border-radius:10px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.4);color:#e8c860;font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s">
+        <span class="favStar">☆</span> <span class="favTxt">أضف للمفضّلة</span>
+      </button>
     </div>
     ${imgHtml}
     <div style="text-align:center;margin-bottom:6px;font-size:15px;font-weight:600">${title}</div>
@@ -813,10 +819,6 @@ function render(d){
     <div class="price-main">
       <div class="lbl">السعر المقترح</div>
       <div class="val">${fmt(d.fair)} <small>KWD</small></div>
-      <button id="favBtn" data-ref="${d.reference}" onclick="toggleFav(this)"
-        style="margin:12px auto 0;display:inline-flex;align-items:center;gap:7px;padding:9px 20px;border-radius:11px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.4);color:#e8c860;font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s">
-        <span class="favStar">☆</span> <span class="favTxt">أضف للمفضّلة</span>
-      </button>
       <div style="display:flex;border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,.1);max-width:420px;margin:14px auto 0">
         <div style="flex:1;background:rgba(63,178,127,.15);padding:9px 6px;text-align:center;border-left:1px solid rgba(255,255,255,.08)">
           <div style="font-size:10px;color:#5dcaa5;margin-bottom:3px;font-weight:600">✅ صفقة</div>
@@ -875,7 +877,7 @@ async function syncFavBtn(){
 }
 function setFavBtnState(btn, isFav){
   btn.querySelector('.favStar').textContent = isFav?'★':'☆';
-  btn.querySelector('.favTxt').textContent = isFav?'في المفضّلة':'أضف للمفضّلة';
+  btn.querySelector('.favTxt').textContent = isFav?'بالمفضّلة':'أضف للمفضّلة';
   btn.style.background = isFav?'rgba(201,162,39,.25)':'rgba(201,162,39,.12)';
 }
 async function toggleFav(btn){
@@ -902,6 +904,7 @@ function newSearch(){
   $('q').value = '';
   $('go').disabled = true;
   fillYears([]);
+  const sc=$('searchCard'); if(sc) sc.style.display='block';   // نرجّع نموذج البحث
   const hs=$('hotSec'); if(hs && $('hotTrack').children.length) hs.style.display='block';
   window.scrollTo({top:0, behavior:'smooth'});
   setTimeout(()=>$('q').focus(), 300);
@@ -1207,6 +1210,9 @@ DEALS_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
   .dcard{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:12px;cursor:pointer;transition:all .2s;text-decoration:none;display:block}
   .dcard:hover{border-color:rgba(201,162,39,.5);transform:translateY(-2px)}
   .drow1{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+  .dleft{display:flex;align-items:center;gap:11px;min-width:0}
+  .dthumb{width:52px;height:52px;flex:0 0 auto;background:#fff;border-radius:9px;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:4px}
+  .dthumb img{max-width:100%;max-height:100%;object-fit:contain}
   .dtitle{font-size:15px;font-weight:600;color:var(--text)}
   .dref{font-family:'Space Mono',monospace;color:var(--gold-soft);font-size:12px;margin-top:2px}
   .ddisc{flex:0 0 auto;background:rgba(224,98,94,.16);border:1px solid rgba(224,98,94,.45);color:#f5a3a3;font-weight:700;font-size:18px;font-family:'Space Mono',monospace;padding:4px 11px;border-radius:10px;white-space:nowrap}
@@ -1245,6 +1251,7 @@ DEALS_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
 const $=id=>document.getElementById(id);
 const CAP=300;
 let DEALS=[];
+var SKETCH = '<svg viewBox="0 0 60 60" width="40" height="40" aria-hidden="true" fill="none" stroke="#a8a8b0" stroke-width="2"><rect x="25" y="6" width="10" height="11" rx="2"/><rect x="25" y="43" width="10" height="11" rx="2"/><circle cx="30" cy="30" r="19"/><circle cx="30" cy="30" r="13"/><line x1="30" y1="30" x2="30" y2="21" stroke-linecap="round"/><line x1="30" y1="30" x2="37" y2="31" stroke-linecap="round"/></svg>';
 function fmt(n){return Number(n).toLocaleString('en-US');}
 function applyFilters(){
   const brand=$('fBrand').value, cond=$('fCond').value, fs=$('fFs').value;
@@ -1259,7 +1266,10 @@ function applyFilters(){
   $('list').innerHTML = shown.map(d=>`
     <a class="dcard" href="/?ref=${encodeURIComponent(d.ref)}">
       <div class="drow1">
-        <div><div class="dtitle">${d.brand} ${d.model}</div><div class="dref">${d.ref}</div></div>
+        <div class="dleft">
+          <div class="dthumb">${d.image?`<img src="${d.image}" alt="${d.ref}" onerror="this.parentElement.innerHTML=SKETCH">`:SKETCH}</div>
+          <div><div class="dtitle">${d.brand} ${d.model}</div><div class="dref">${d.ref}</div></div>
+        </div>
         <div class="ddisc">▼ ${d.drop}%</div>
       </div>
       <div class="dprices"><span class="sold">الآن: ${fmt(d.now)}</span> <span class="fair">· سابقاً: ${fmt(d.prev)} KWD</span></div>
