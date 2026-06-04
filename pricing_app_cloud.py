@@ -1104,6 +1104,7 @@ class RequestHandler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype='application/json', extra=None):
         self.send_response(code)
         self.send_header('Content-Type', f'{ctype}; charset=utf-8')
+        self.send_header('Cache-Control', 'no-store')   # لا كاش للصفحات — يضمن أحدث HTML دائماً
         for k, v in (extra or []):
             self.send_header(k, v)
         self.end_headers()
