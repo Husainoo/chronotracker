@@ -35,10 +35,11 @@ ENGINE = None
 SEARCH_INDEX = []
 _years_by_ref = {}
 _REF_INFO = {}
+HOTTEST = []
 
 def boot():
     """تحميل المحرك وبناء فهرس البحث. يُستدعى بعد ربط المنفذ مباشرة."""
-    global ENGINE, SEARCH_INDEX, _years_by_ref, _REF_INFO
+    global ENGINE, SEARCH_INDEX, _years_by_ref, _REF_INFO, HOTTEST
     print("جاري تحميل المحرك والبيانات ...")
     ENGINE = WatchValuationEngine(csv_path=CSV_PATH, discontinued_csv=DISC_CSV)
 
@@ -75,6 +76,25 @@ def boot():
     _years_by_ref = years_by_ref
     SEARCH_INDEX = index
     _REF_INFO = {m['ref']: m['label'] for m in SEARCH_INDEX}
+
+    # أكثر 30 ساعة مبيعاً + نسبة تغيّر السعر (متوسط النصف الأحدث مقابل الأقدم)
+    hot = []
+    sold = ENGINE.sold
+    for m in SEARCH_INDEX[:30]:
+        ref = m['ref']
+        g = sold[sold['referance'] == ref].sort_values('priceDate')
+        prices = [float(x) for x in g['soldPrice'].tolist() if x and x > 0]
+        change = None
+        if len(prices) >= 4:
+            h = len(prices) // 2
+            older = sum(prices[:h]) / h
+            recent = sum(prices[h:]) / (len(prices) - h)
+            if older > 0:
+                change = round((recent / older - 1) * 100)
+        hot.append({'ref': ref, 'image': image_file_for(ref),
+                    'n': m['n'], 'change': change})
+    HOTTEST = hot
+
     print(f"✓ جاهز — {len(ENGINE.sold):,} صفقة، {len(SEARCH_INDEX):,} موديل قابل للتسعير")
 
 
@@ -196,6 +216,26 @@ HTML = r"""<!DOCTYPE html>
     margin-top:18px;transition:background .15s}
   .btn-go:hover{background:var(--gold-soft)}
   .btn-go:disabled{opacity:.4;cursor:not-allowed}
+  .hot-sec{margin-bottom:18px}
+  .hot-title{color:var(--gold-soft);font-size:13px;font-weight:600;margin-bottom:10px;display:flex;gap:6px;align-items:center}
+  .hot-track{display:flex;gap:12px;overflow-x:auto;padding:4px 2px 10px;scroll-behavior:smooth;
+    -webkit-overflow-scrolling:touch;scrollbar-width:thin}
+  .hot-track::-webkit-scrollbar{height:6px}
+  .hot-track::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+  .hot-card{flex:0 0 auto;width:140px;background:var(--surface);border:1px solid var(--line);
+    border-radius:14px;overflow:hidden;position:relative;transition:border-color .2s}
+  .hot-card:hover{border-color:rgba(201,162,39,.5)}
+  .hot-img{width:100%;aspect-ratio:1;background:#fff;display:flex;align-items:center;
+    justify-content:center;padding:8px;cursor:pointer}
+  .hot-img img{max-width:100%;max-height:100%;object-fit:contain}
+  .hot-noimg{color:#bbb;font-size:11px;font-family:'Space Mono',monospace;text-align:center;word-break:break-all}
+  .hot-ref{padding:9px 6px;text-align:center;font-family:'Space Mono',monospace;color:var(--gold-soft);
+    font-size:13px;font-weight:700;border-top:1px solid var(--line);cursor:copy;user-select:all}
+  .hot-ref:hover{background:rgba(201,162,39,.08)}
+  .hot-badge{position:absolute;top:8px;right:8px;font-size:11px;font-weight:700;padding:3px 7px;
+    border-radius:7px;font-family:'Space Mono',monospace}
+  .hot-badge.up{background:rgba(63,178,127,.9);color:#06281c}
+  .hot-badge.down{background:rgba(224,98,94,.9);color:#2a0b0a}
   .result-card{display:none}
   .result-card.show{display:block;animation:fade .3s ease}
   @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
@@ -285,6 +325,11 @@ HTML = r"""<!DOCTYPE html>
     <h1>مُسعّر الساعات</h1>
     <p>تقييم مبني على المبيعات الفعلية</p>
     <a href="/favorites" style="display:inline-block;margin-top:12px;padding:8px 18px;border-radius:10px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.35);color:var(--gold-soft);text-decoration:none;font-size:13px;font-weight:600">⭐ ساعاتي المفضّلة</a>
+  </div>
+
+  <div class="hot-sec" id="hotSec" style="display:none">
+    <div class="hot-title">🔥 الأكثر سخونة — أكثر ٣٠ ساعة مبيعاً</div>
+    <div class="hot-track" id="hotTrack"></div>
   </div>
 
   <div class="card">
@@ -761,6 +806,57 @@ async function autoLoadFromUrl(){
     }
   }catch(e){ doSearch(''); }
 }
+// ===== الأكثر سخونة =====
+function copyRef(e, ref){
+  e.stopPropagation();
+  const done = ()=>toast('نُسخ ✓');
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(ref).then(done).catch(()=>fallbackCopy(ref, done));
+  } else { fallbackCopy(ref, done); }
+}
+function fallbackCopy(t, cb){
+  const ta=document.createElement('textarea');
+  ta.value=t; ta.style.position='fixed'; ta.style.opacity='0';
+  document.body.appendChild(ta); ta.focus(); ta.select();
+  try{ document.execCommand('copy'); cb(); }catch(e){}
+  document.body.removeChild(ta);
+}
+function openHot(ref){ location.href = '/?ref=' + encodeURIComponent(ref); }
+
+async function loadHottest(){
+  try{
+    const r = await fetch('/api/hottest');
+    const list = await r.json();
+    if(!list || !list.length) return;
+    const t = $('hotTrack');
+    t.innerHTML = list.map(w=>{
+      const badge = (w.change!=null)
+        ? `<div class="hot-badge ${w.change>=0?'up':'down'}">${w.change>=0?'+':''}${w.change}%</div>` : '';
+      const img = w.image
+        ? `<img src="${w.image}" alt="${w.ref}" onerror="this.parentElement.innerHTML='<span class=\\'hot-noimg\\'>${w.ref}</span>'">`
+        : `<span class="hot-noimg">${w.ref}</span>`;
+      return `<div class="hot-card">
+                ${badge}
+                <div class="hot-img" onclick="openHot('${w.ref}')">${img}</div>
+                <div class="hot-ref" title="اضغط للنسخ" onclick="copyRef(event,'${w.ref}')">${w.ref}</div>
+              </div>`;
+    }).join('');
+    $('hotSec').style.display='block';
+    autoScrollHot(t);
+  }catch(e){}
+}
+function autoScrollHot(t){
+  let paused=false;
+  ['mouseenter','touchstart'].forEach(ev=>t.addEventListener(ev,()=>paused=true,{passive:true}));
+  ['mouseleave','touchend'].forEach(ev=>t.addEventListener(ev,()=>paused=false,{passive:true}));
+  setInterval(()=>{
+    if(paused) return;
+    if(t.scrollLeft + t.clientWidth >= t.scrollWidth - 1) t.scrollLeft = 0;
+    else t.scrollLeft += 1;
+  }, 30);
+}
+loadHottest();
+
 autoLoadFromUrl();
 </script>
 </body>
@@ -815,7 +911,7 @@ FAV_HTML = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
-<a href="/" id="floatBack" style="position:fixed;top:16px;right:16px;z-index:100;display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:11px;background:rgba(201,162,39,.95);color:#0e0e10;text-decoration:none;font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;font-weight:700;box-shadow:0 4px 16px rgba(0,0,0,.4)">← رجوع للمُسعّر</a>
+<a href="/" id="floatBack" style="position:fixed;top:16px;right:16px;z-index:100;display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:11px;background:rgba(201,162,39,.95);color:#0e0e10;text-decoration:none;font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;font-weight:700;box-shadow:0 4px 16px rgba(0,0,0,.4)">🏠 الرئيسية</a>
 <div class="wrap">
   <div class="head">
     <div class="mark">CHRONOTRACKER</div>
@@ -920,6 +1016,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             favset = set(load_favorites())
             results = [dict(m, is_fav=(m['ref'] in favset)) for m in search_models(q)]
             self._send(200, json.dumps(results, ensure_ascii=False))
+        elif path == '/api/hottest':
+            self._send(200, json.dumps(HOTTEST, ensure_ascii=False))
         elif path == '/api/evaluate':
             p = parse_qs(u.query)
             ref = p.get('ref', [''])[0]
