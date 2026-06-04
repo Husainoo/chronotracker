@@ -9,12 +9,14 @@
 يُعاد تشغيله بعد كل تحديث بيانات (مدمج في update.command).
 """
 import json, os, time
+import pandas as pd
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 from watch_engine import WatchValuationEngine
 
 MIN_DISCOUNT = 0.08   # حد أدنى للخصم
 MIN_GROUP = 6         # المجموعة لازم ≥6 صفقات عشان العادل يكون موثوقاً
+WINDOW_DAYS = 730     # نخزّن صفقات آخر سنتين فقط (أخفّ على الجوال) — العادل من كل المبيعات
 
 
 def main():
@@ -38,12 +40,15 @@ def main():
             print(f"  {i}/{len(big)} ...")
     print(f"حساب العادل تمّ في {time.time()-t0:.1f}s")
 
+    cut2y = e.ref_date - pd.Timedelta(days=WINDOW_DAYS)
     deals = []
     s = sold[['referance', 'brand', 'model', 'soldPrice', 'priceDate',
               'cond2', 'fs', 'year', 'pageName']]
     for ref, br, mo, p, dt, c2, fv2, yr, pg in zip(
             s['referance'], s['brand'], s['model'], s['soldPrice'], s['priceDate'],
             s['cond2'], s['fs'], s['year'], s['pageName']):
+        if dt < cut2y:                       # نخزّن آخر سنتين فقط
+            continue
         fv = fair.get((ref, c2, fv2))
         if not fv or not p or p <= 0:
             continue

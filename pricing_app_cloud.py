@@ -1238,7 +1238,6 @@ DEALS_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
     <select id="fPeriod">
       <option value="1y" selected>المدة: آخر سنة</option>
       <option value="2y">آخر سنتين</option>
-      <option value="all">الكل</option>
     </select>
   </div>
   <div class="count" id="count"></div>
@@ -1251,7 +1250,7 @@ const CAP=300;
 let DEALS=[], MAXDATE='';
 function fmt(n){return Number(n).toLocaleString('en-US');}
 function periodCut(p){
-  if(p==='all'||!MAXDATE) return '';
+  if(!MAXDATE) return '';
   const d=new Date(MAXDATE); d.setMonth(d.getMonth()-(p==='1y'?12:24));
   return d.toISOString().slice(0,10);
 }
