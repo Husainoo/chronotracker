@@ -46,9 +46,14 @@ fi
 echo "  فيه تغييرات — نجهّزها للرفع."
 echo ""
 
-# (3) رفع البيانات المحدّثة (الـ CSV + الصور الجديدة فقط)
+# نجدّد صفقات "أقل من السوق" من البيانات الجديدة (deals.json)
+echo "▶ تحديث صفقات 'أقل من السوق' (deals.json) ..."
+python3 make_deals.py || echo "  (تخطّينا deals.json — تحقّق لاحقاً)"
+echo ""
+
+# (3) رفع البيانات المحدّثة (الـ CSV + الصور الجديدة + deals.json)
 echo "▶ (3/3) رفع البيانات لـ GitHub ..."
-git add chronotracker_complete_v2.csv images/
+git add chronotracker_complete_v2.csv images/ deals.json
 git commit -m "Data update: $(date '+%Y-%m-%d %H:%M')
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"

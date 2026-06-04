@@ -39,11 +39,12 @@ HOTTEST = []
 BROWSE_BRANDS = []
 BROWSE_FAMILIES = {}
 BROWSE_REFS = {}
+DEALS = []
 
 def boot():
     """تحميل المحرك وبناء فهرس البحث. يُستدعى بعد ربط المنفذ مباشرة."""
     global ENGINE, SEARCH_INDEX, _years_by_ref, _REF_INFO, HOTTEST
-    global BROWSE_BRANDS, BROWSE_FAMILIES, BROWSE_REFS
+    global BROWSE_BRANDS, BROWSE_FAMILIES, BROWSE_REFS, DEALS
     print("جاري تحميل المحرك والبيانات ...")
     ENGINE = WatchValuationEngine(csv_path=CSV_PATH, discontinued_csv=DISC_CSV)
 
@@ -127,6 +128,12 @@ def boot():
         BROWSE_FAMILIES[b] = [{'family': f, 'image': _first_img(fam_refs[(b, f)]),
                                'versions': len(fam_refs[(b, f)])} for f in fams]
     BROWSE_REFS = dict(fam_refs)
+
+    # صفقات "أقل من السوق" — مُولّدة مسبقاً في deals.json (precompute بمنطق evaluate)
+    try:
+        DEALS = json.load(open('deals.json', encoding='utf-8')) if os.path.exists('deals.json') else []
+    except Exception:
+        DEALS = []
 
     print(f"✓ جاهز — {len(ENGINE.sold):,} صفقة، {len(SEARCH_INDEX):,} موديل قابل للتسعير")
 
@@ -378,6 +385,7 @@ HTML = r"""<!DOCTYPE html>
     <h1>مُسعّر الساعات</h1>
     <a href="/favorites" style="display:inline-block;margin-top:12px;padding:8px 18px;border-radius:10px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.35);color:var(--gold-soft);text-decoration:none;font-size:13px;font-weight:600">⭐ ساعاتي المفضّلة</a>
     <a href="/browse" style="display:inline-block;margin-top:12px;margin-right:8px;padding:8px 18px;border-radius:10px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.35);color:var(--gold-soft);text-decoration:none;font-size:13px;font-weight:600">🖼️ تصفّح بالصور</a>
+    <a href="/deals" style="display:inline-block;margin-top:12px;margin-right:8px;padding:8px 18px;border-radius:10px;background:rgba(63,178,127,.12);border:1px solid rgba(63,178,127,.4);color:#5dcaa5;text-decoration:none;font-size:13px;font-weight:600">💰 أقل من السوق</a>
   </div>
 
   <div class="hot-sec" id="hotSec" style="display:none">
@@ -1179,6 +1187,113 @@ if(family&&brand)renderRefs(brand,family); else if(brand)renderFamilies(brand); 
 </script></body></html>"""
 
 
+DEALS_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChronoTracker — أقل من السوق</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{--bg:#0e0e10;--surface:#19191d;--surface2:#222228;--line:#2e2e36;--gold:#c9a227;--gold-soft:#e8c860;--text:#ececf0;--muted:#8a8a95;--green:#3fb27f}
+  body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans Arabic',sans-serif;min-height:100vh;line-height:1.6;padding:24px 16px}
+  .wrap{max-width:760px;margin:0 auto}
+  .home-btn{position:fixed;top:16px;right:16px;z-index:100;display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:11px;background:rgba(201,162,39,.95);color:#0e0e10;text-decoration:none;font-size:14px;font-weight:700;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+  .head{text-align:center;margin-bottom:16px;padding-top:16px}
+  .head .mark{font-family:'Space Mono',monospace;color:var(--gold);font-size:13px;letter-spacing:2px}
+  .head h1{font-size:24px;font-weight:700;margin:6px 0}
+  .head p{color:var(--muted);font-size:13px}
+  .filters{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:10px}
+  .filters select{background:var(--surface2);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:7px 11px;font-family:inherit;font-size:13px}
+  .count{color:var(--muted);font-size:12px;text-align:center;margin-bottom:14px;font-family:'Space Mono',monospace}
+  .dcard{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:12px;cursor:pointer;transition:all .2s;text-decoration:none;display:block}
+  .dcard:hover{border-color:rgba(201,162,39,.5);transform:translateY(-2px)}
+  .drow1{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+  .dtitle{font-size:15px;font-weight:600;color:var(--text)}
+  .dref{font-family:'Space Mono',monospace;color:var(--gold-soft);font-size:12px;margin-top:2px}
+  .ddisc{flex:0 0 auto;background:rgba(63,178,127,.16);border:1px solid rgba(63,178,127,.45);color:var(--green);font-weight:700;font-size:18px;font-family:'Space Mono',monospace;padding:4px 11px;border-radius:10px;white-space:nowrap}
+  .dprices{margin-top:10px;font-size:13px;font-family:'Space Mono',monospace}
+  .dprices .sold{color:var(--green);font-weight:700}
+  .dprices .fair{color:var(--muted)}
+  .dmeta{margin-top:6px;color:var(--muted);font-size:12px;display:flex;flex-wrap:wrap;gap:6px 12px}
+  .empty{text-align:center;color:var(--muted);padding:50px 20px;font-size:14px}
+  .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:28px;font-family:'Space Mono',monospace}
+</style></head><body>
+<a href="/" class="home-btn">🏠 الرئيسية</a>
+<div class="wrap">
+  <div class="head">
+    <div class="mark">CHRONOTRACKER</div>
+    <h1>💰 أقل من السوق</h1>
+    <p>صفقات انباعت فعلاً بأقل من القيمة العادلة — مرتّبة بأكبر خصم</p>
+  </div>
+  <div class="filters">
+    <select id="fCond">
+      <option value="all">الحالة: الكل</option>
+      <option value="مستخدمة">مستخدمة</option>
+      <option value="غير مستخدمة">غير مستخدمة</option>
+    </select>
+    <select id="fFs">
+      <option value="all">الطقم: الكل</option>
+      <option value="Full Set">فل ست</option>
+      <option value="ناقص">غير كامل</option>
+    </select>
+    <select id="fPeriod">
+      <option value="1y" selected>المدة: آخر سنة</option>
+      <option value="2y">آخر سنتين</option>
+      <option value="all">الكل</option>
+    </select>
+  </div>
+  <div class="count" id="count"></div>
+  <div id="list"></div>
+  <div class="foot">ChronoTracker</div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const CAP=300;
+let DEALS=[], MAXDATE='';
+function fmt(n){return Number(n).toLocaleString('en-US');}
+function periodCut(p){
+  if(p==='all'||!MAXDATE) return '';
+  const d=new Date(MAXDATE); d.setMonth(d.getMonth()-(p==='1y'?12:24));
+  return d.toISOString().slice(0,10);
+}
+function applyFilters(){
+  const cond=$('fCond').value, fs=$('fFs').value, cut=periodCut($('fPeriod').value);
+  let ds=DEALS;
+  if(cond!=='all') ds=ds.filter(d=>d.cond===cond);
+  if(fs!=='all') ds=ds.filter(d=>d.fs===fs);
+  if(cut) ds=ds.filter(d=>d.date>=cut);
+  const total=ds.length, shown=ds.slice(0,CAP);
+  $('count').textContent = total
+    ? `${fmt(total)} صفقة` + (total>CAP?` — معروض أعلى ${CAP} خصماً`:'')
+    : 'لا توجد صفقات بهذه الفلاتر';
+  $('list').innerHTML = shown.map(d=>`
+    <a class="dcard" href="/?ref=${encodeURIComponent(d.ref)}">
+      <div class="drow1">
+        <div><div class="dtitle">${d.brand} ${d.model}</div><div class="dref">${d.ref}</div></div>
+        <div class="ddisc">-${d.discount}%</div>
+      </div>
+      <div class="dprices"><span class="sold">سعر البيع: ${fmt(d.price)}</span> <span class="fair">· العادل: ${fmt(d.fair)} KWD</span></div>
+      <div class="dmeta">
+        <span>📅 ${d.date}</span>
+        ${d.source?`<span>🏛 ${d.source}</span>`:''}
+        <span>${d.cond}</span>
+        <span>${d.fs}</span>
+      </div>
+    </a>`).join('');
+}
+async function load(){
+  try{
+    const r=await fetch('/api/deals'); DEALS=await r.json();
+    if(!Array.isArray(DEALS)) DEALS=[];
+  }catch(e){ DEALS=[]; }
+  if(!DEALS.length){ $('count').textContent=''; $('list').innerHTML='<div class="empty">لا توجد بيانات صفقات بعد.</div>'; return; }
+  MAXDATE=DEALS.reduce((a,d)=>d.date>a?d.date:a, DEALS[0].date);
+  ['fCond','fFs','fPeriod'].forEach(id=>$(id).onchange=applyFilters);
+  applyFilters();
+}
+load();
+</script></body></html>"""
+
+
 # ========================
 # HTTP Server
 # ========================
@@ -1232,6 +1347,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(results, ensure_ascii=False))
         elif path == '/api/hottest':
             self._send(200, json.dumps(HOTTEST, ensure_ascii=False))
+        elif path == '/deals' or path == '/deals.html':
+            self._send(200, DEALS_HTML, 'text/html')
+        elif path == '/api/deals':
+            self._send(200, json.dumps(DEALS, ensure_ascii=False))
         elif path == '/api/pricehistory':
             ref = parse_qs(u.query).get('ref', [''])[0]
             try:
