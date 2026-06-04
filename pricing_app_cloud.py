@@ -318,6 +318,12 @@ HTML = r"""<!DOCTYPE html>
   .collapsible .chev{color:var(--muted);font-size:12px}
   .chart-wrap{margin-top:18px}
   .chart-wrap .ct{color:var(--muted);font-size:12px;font-weight:600;margin-bottom:10px}
+  .ph-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+  .ph-seg{display:flex;background:var(--surface2);border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .ph-seg button{background:none;border:none;color:var(--muted);padding:6px 11px;font-family:inherit;font-size:12px;cursor:pointer}
+  .ph-seg button.on{background:var(--gold);color:#1a1a1a;font-weight:600}
+  .ph-controls select{background:var(--surface2);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:6px 10px;font-family:inherit;font-size:12px}
+  .ph-count{color:var(--muted);font-size:11px;margin-top:8px;text-align:center}
   .chart{background:var(--surface2);border-radius:12px;padding:14px 8px 6px;position:relative}
   .tip{position:absolute;background:#000;border:1px solid var(--gold);border-radius:8px;
     padding:6px 10px;font-size:12px;pointer-events:none;opacity:0;transition:opacity .12s;
@@ -498,7 +504,7 @@ function flag(c){
   return FLAGS[c] || c;
 }
 
-function buildChart(hist){
+function chartSVG(hist){
   if(!hist || hist.length < 2) return '';
   const W=600, H=180, pad={t:16,r:14,b:28,l:52};
   const iw=W-pad.l-pad.r, ih=H-pad.t-pad.b;
@@ -531,9 +537,7 @@ function buildChart(hist){
   [0, Math.floor(hist.length/2), hist.length-1].forEach(i=>{
     xlab+=`<text x="${X(i).toFixed(1)}" y="${H-8}" text-anchor="middle" fill="#8a8a95" font-size="10" font-family="Space Mono,monospace">${hist[i].month}</text>`;
   });
-  return `<div class="chart-wrap">
-    <div class="ct">📈 حركة السعر الشهرية (وسيط البيع)</div>
-    <div class="chart" id="chartBox">
+  return `<div class="chart" id="chartBox">
       <div class="tip" id="tip"></div>
       <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">
         <defs><linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">
@@ -546,8 +550,55 @@ function buildChart(hist){
         ${dots}
         ${xlab}
       </svg>
-    </div>
-  </div>`;
+    </div>`;
+}
+
+function phMedian(a){a=[...a].sort((x,y)=>x-y);const n=a.length;return n?(n%2?a[(n-1)/2]:(a[n/2-1]+a[n/2])/2):0;}
+function phMonthly(deals){
+  const by={}; deals.forEach(d=>{const m=d.date.slice(0,7);(by[m]=by[m]||[]).push(d.price);});
+  return Object.keys(by).sort().map(m=>({month:m,price:Math.round(phMedian(by[m])),count:by[m].length}));
+}
+let PH_DEALS=[];
+function phFilter(){
+  const period=(document.querySelector('#phPeriod button.on')?.dataset.v)||'all';
+  const year=$('phYear').value;
+  let ds = year==='all'?PH_DEALS:PH_DEALS.filter(d=>String(d.year)===year);
+  if(period!=='all' && PH_DEALS.length){
+    const maxd=PH_DEALS.reduce((a,d)=>d.date>a?d.date:a,PH_DEALS[0].date);
+    const cut=new Date(maxd); cut.setMonth(cut.getMonth()-(period==='6m'?6:period==='1y'?12:24));
+    const c=cut.toISOString().slice(0,10);
+    ds=ds.filter(d=>d.date>=c);
+  }
+  return ds;
+}
+function phDraw(){
+  const ds=phFilter(), hist=phMonthly(ds);
+  $('phChart').innerHTML = hist.length>=2 ? chartSVG(hist)
+    : '<div style="color:var(--muted);font-size:13px;padding:18px;text-align:center">بيانات غير كافية للرسم في هذا المدى</div>';
+  $('phCount').textContent='عدد الصفقات في المدى المعروض: '+ds.length;
+  if(hist.length>=2) wireChart();
+}
+async function initPriceHistory(ref, fallbackHist){
+  if(!$('phChart')) return;
+  try{
+    const r=await fetch('/api/pricehistory?ref='+encodeURIComponent(ref));
+    PH_DEALS=await r.json();
+    if(!Array.isArray(PH_DEALS)||!PH_DEALS.length) throw 0;
+  }catch(e){
+    PH_DEALS=[];
+    $('phChart').innerHTML = (fallbackHist&&fallbackHist.length>=2)?chartSVG(fallbackHist)
+      :'<div style="color:var(--muted);font-size:13px;padding:18px;text-align:center">تعذّر تحميل بيانات الرسم.</div>';
+    if(fallbackHist&&fallbackHist.length>=2) wireChart();
+    return;
+  }
+  const years=[...new Set(PH_DEALS.map(d=>d.year).filter(y=>y!=null))].sort((a,b)=>b-a);
+  const sel=$('phYear'); years.forEach(y=>{const o=document.createElement('option');o.value=String(y);o.textContent=y;sel.appendChild(o);});
+  document.querySelectorAll('#phPeriod button').forEach(b=>b.onclick=()=>{
+    document.querySelectorAll('#phPeriod button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); phDraw();
+  });
+  sel.onchange=phDraw;
+  phDraw();
 }
 
 function wireChart(){
@@ -675,7 +726,18 @@ function render(d){
     : `<div style="margin:0 0 16px;padding:11px 15px;border-radius:12px;background:rgba(63,178,127,.08);border:1px solid rgba(63,178,127,.22)">
          <div style="color:var(--green);font-size:13px">✓ موديل لا يزال في الإنتاج</div>
        </div>`;
-  const chart = buildChart(d.history);
+  const chart = `<div class="chart-wrap">
+      <div class="ct">📈 حركة السعر الشهرية (وسيط البيع)</div>
+      <div class="ph-controls">
+        <div class="ph-seg" id="phPeriod">
+          <button data-v="6m">٦ أشهر</button><button data-v="1y">سنة</button>
+          <button data-v="2y">سنتين</button><button data-v="all" class="on">الكل</button>
+        </div>
+        <select id="phYear"><option value="all">كل السنوات</option></select>
+      </div>
+      <div id="phChart"></div>
+      <div class="ph-count" id="phCount"></div>
+    </div>`;
   // صورة الساعة (لو موجودة) — بارزة فوق العنوان
   let imgHtml='';
   if(d.image_file){
@@ -763,7 +825,7 @@ function render(d){
     ${salesAll?'<div class="table-divider"><span>سجل كل السنوات ⬇</span></div>'+salesAll:''}
   `;
   out.classList.add('show');
-  wireChart();
+  initPriceHistory(d.reference, d.history);
   syncFavBtn();
   out.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
@@ -1147,6 +1209,19 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(results, ensure_ascii=False))
         elif path == '/api/hottest':
             self._send(200, json.dumps(HOTTEST, ensure_ascii=False))
+        elif path == '/api/pricehistory':
+            ref = parse_qs(u.query).get('ref', [''])[0]
+            try:
+                g = ENGINE.sold[ENGINE.sold['referance'] == ref].sort_values('priceDate')
+                dates = g['priceDate'].dt.strftime('%Y-%m-%d').tolist()
+                prices = g['soldPrice'].tolist()
+                years = g['year'].tolist()
+                out = [{'date': d, 'price': int(round(p)),
+                        'year': (int(y) if (y == y) else None)}   # y==y يكشف NaN
+                       for d, p, y in zip(dates, prices, years) if p and p > 0]
+                self._send(200, json.dumps(out, ensure_ascii=False))
+            except Exception:
+                self._send(200, json.dumps([], ensure_ascii=False))
         elif path == '/browse' or path == '/browse.html':
             self._send(200, BROWSE_HTML, 'text/html')
         elif path == '/api/brands':
