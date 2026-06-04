@@ -129,7 +129,7 @@ def boot():
                                'versions': len(fam_refs[(b, f)])} for f in fams]
     BROWSE_REFS = dict(fam_refs)
 
-    # صفقات "أقل من السوق" — مُولّدة مسبقاً في deals.json (precompute بمنطق evaluate)
+    # قائمة "الأكثر نزولاً" — مُولّدة مسبقاً في deals.json (وسطاء سعر البيع)
     try:
         DEALS = json.load(open('deals.json', encoding='utf-8')) if os.path.exists('deals.json') else []
     except Exception:
@@ -385,7 +385,7 @@ HTML = r"""<!DOCTYPE html>
     <h1>مُسعّر الساعات</h1>
     <a href="/favorites" style="display:inline-block;margin-top:12px;padding:8px 18px;border-radius:10px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.35);color:var(--gold-soft);text-decoration:none;font-size:13px;font-weight:600">⭐ ساعاتي المفضّلة</a>
     <a href="/browse" style="display:inline-block;margin-top:12px;margin-right:8px;padding:8px 18px;border-radius:10px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.35);color:var(--gold-soft);text-decoration:none;font-size:13px;font-weight:600">🖼️ تصفّح بالصور</a>
-    <a href="/deals" style="display:inline-block;margin-top:12px;margin-right:8px;padding:8px 18px;border-radius:10px;background:rgba(63,178,127,.12);border:1px solid rgba(63,178,127,.4);color:#5dcaa5;text-decoration:none;font-size:13px;font-weight:600">💰 أقل من السوق</a>
+    <a href="/deals" style="display:inline-block;margin-top:12px;margin-right:8px;padding:8px 18px;border-radius:10px;background:rgba(224,98,94,.12);border:1px solid rgba(224,98,94,.4);color:#f5a3a3;text-decoration:none;font-size:13px;font-weight:600">📉 الأكثر نزولاً</a>
   </div>
 
   <div class="hot-sec" id="hotSec" style="display:none">
@@ -1189,7 +1189,7 @@ if(family&&brand)renderRefs(brand,family); else if(brand)renderFamilies(brand); 
 
 DEALS_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ChronoTracker — أقل من السوق</title>
+<title>ChronoTracker — الأكثر نزولاً</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
   *{margin:0;padding:0;box-sizing:border-box}
@@ -1209,9 +1209,9 @@ DEALS_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
   .drow1{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
   .dtitle{font-size:15px;font-weight:600;color:var(--text)}
   .dref{font-family:'Space Mono',monospace;color:var(--gold-soft);font-size:12px;margin-top:2px}
-  .ddisc{flex:0 0 auto;background:rgba(63,178,127,.16);border:1px solid rgba(63,178,127,.45);color:var(--green);font-weight:700;font-size:18px;font-family:'Space Mono',monospace;padding:4px 11px;border-radius:10px;white-space:nowrap}
+  .ddisc{flex:0 0 auto;background:rgba(224,98,94,.16);border:1px solid rgba(224,98,94,.45);color:#f5a3a3;font-weight:700;font-size:18px;font-family:'Space Mono',monospace;padding:4px 11px;border-radius:10px;white-space:nowrap}
   .dprices{margin-top:10px;font-size:13px;font-family:'Space Mono',monospace}
-  .dprices .sold{color:var(--green);font-weight:700}
+  .dprices .sold{color:#f5a3a3;font-weight:700}
   .dprices .fair{color:var(--muted)}
   .dmeta{margin-top:6px;color:var(--muted);font-size:12px;display:flex;flex-wrap:wrap;gap:6px 12px}
   .empty{text-align:center;color:var(--muted);padding:50px 20px;font-size:14px}
@@ -1221,10 +1221,11 @@ DEALS_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
 <div class="wrap">
   <div class="head">
     <div class="mark">CHRONOTRACKER</div>
-    <h1>💰 أقل من السوق</h1>
-    <p>صفقات انباعت فعلاً بأقل من القيمة العادلة — مرتّبة بأكبر خصم</p>
+    <h1>📉 الأكثر نزولاً</h1>
+    <p>مراجع نزل وسيط سعر بيعها مؤخراً (آخر 90 يوم) مقابل الفترة السابقة</p>
   </div>
   <div class="filters">
+    <select id="fBrand"><option value="all">الماركة: الكل</option></select>
     <select id="fCond">
       <option value="all">الحالة: الكل</option>
       <option value="مستخدمة">مستخدمة</option>
@@ -1235,10 +1236,6 @@ DEALS_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
       <option value="Full Set">فل ست</option>
       <option value="ناقص">غير كامل</option>
     </select>
-    <select id="fPeriod">
-      <option value="1y" selected>المدة: آخر سنة</option>
-      <option value="2y">آخر سنتين</option>
-    </select>
   </div>
   <div class="count" id="count"></div>
   <div id="list"></div>
@@ -1247,33 +1244,27 @@ DEALS_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
 <script>
 const $=id=>document.getElementById(id);
 const CAP=300;
-let DEALS=[], MAXDATE='';
+let DEALS=[];
 function fmt(n){return Number(n).toLocaleString('en-US');}
-function periodCut(p){
-  if(!MAXDATE) return '';
-  const d=new Date(MAXDATE); d.setMonth(d.getMonth()-(p==='1y'?12:24));
-  return d.toISOString().slice(0,10);
-}
 function applyFilters(){
-  const cond=$('fCond').value, fs=$('fFs').value, cut=periodCut($('fPeriod').value);
+  const brand=$('fBrand').value, cond=$('fCond').value, fs=$('fFs').value;
   let ds=DEALS;
+  if(brand!=='all') ds=ds.filter(d=>d.brand===brand);
   if(cond!=='all') ds=ds.filter(d=>d.cond===cond);
   if(fs!=='all') ds=ds.filter(d=>d.fs===fs);
-  if(cut) ds=ds.filter(d=>d.date>=cut);
   const total=ds.length, shown=ds.slice(0,CAP);
   $('count').textContent = total
-    ? `${fmt(total)} صفقة` + (total>CAP?` — معروض أعلى ${CAP} خصماً`:'')
-    : 'لا توجد صفقات بهذه الفلاتر';
+    ? `${fmt(total)} مرجع نازل` + (total>CAP?` — معروض أعلى ${CAP}`:'')
+    : 'لا توجد نتائج بهذه الفلاتر';
   $('list').innerHTML = shown.map(d=>`
     <a class="dcard" href="/?ref=${encodeURIComponent(d.ref)}">
       <div class="drow1">
         <div><div class="dtitle">${d.brand} ${d.model}</div><div class="dref">${d.ref}</div></div>
-        <div class="ddisc">-${d.discount}%</div>
+        <div class="ddisc">▼ ${d.drop}%</div>
       </div>
-      <div class="dprices"><span class="sold">سعر البيع: ${fmt(d.price)}</span> <span class="fair">· العادل: ${fmt(d.fair)} KWD</span></div>
+      <div class="dprices"><span class="sold">الآن: ${fmt(d.now)}</span> <span class="fair">· سابقاً: ${fmt(d.prev)} KWD</span></div>
       <div class="dmeta">
-        <span>📅 ${d.date}</span>
-        ${d.source?`<span>🏛 ${d.source}</span>`:''}
+        <span>📊 ${d.count} بيعة آخر 90 يوم</span>
         <span>${d.cond}</span>
         <span>${d.fs}</span>
       </div>
@@ -1284,9 +1275,10 @@ async function load(){
     const r=await fetch('/api/deals'); DEALS=await r.json();
     if(!Array.isArray(DEALS)) DEALS=[];
   }catch(e){ DEALS=[]; }
-  if(!DEALS.length){ $('count').textContent=''; $('list').innerHTML='<div class="empty">لا توجد بيانات صفقات بعد.</div>'; return; }
-  MAXDATE=DEALS.reduce((a,d)=>d.date>a?d.date:a, DEALS[0].date);
-  ['fCond','fFs','fPeriod'].forEach(id=>$(id).onchange=applyFilters);
+  if(!DEALS.length){ $('count').textContent=''; $('list').innerHTML='<div class="empty">لا توجد مراجع نازلة حالياً.</div>'; return; }
+  const brands=[...new Set(DEALS.map(d=>d.brand))].sort();
+  const sel=$('fBrand'); brands.forEach(b=>{const o=document.createElement('option');o.value=b;o.textContent=b;sel.appendChild(o);});
+  ['fBrand','fCond','fFs'].forEach(id=>$(id).onchange=applyFilters);
   applyFilters();
 }
 load();

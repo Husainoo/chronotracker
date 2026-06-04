@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-يولّد deals.json لصفحة "أقل من السوق" (/deals).
-لكل مجموعة (مرجع + حالة + طقم) بـ ≥6 صفقات، يحسب القيمة العادلة بنفس منطق
-محرك التقييم evaluate(reference, year=None, condition, full_set) — فالنسب
-تتّسق مع صفحة الساعة. ثم يجمع كل صفقة انباعت بـ ≥8% تحت عادلها، مرتّبة تنازلياً.
+يولّد deals.json لصفحة "الأكثر نزولاً" (/deals).
+لكل مجموعة (مرجع + حالة + طقم): وسيط سعر البيع في النافذة الحالية (آخر CUR_DAYS يوم)
+مقابل وسيط الفترة السابقة (من CUR_DAYS إلى PRIOR_DAYS يوم قبل أحدث تاريخ بالبيانات).
+نسبة النزول = (الوسيط السابق − الحالي) ÷ السابق. نعرض النزول ≥ MIN_DROP فقط،
+بشرط ≥ MIN_EACH بيعة بكل فترة. الوسيط (median) يتجاهل البيعات الشاذة. لا يستخدم evaluate.
 
 التشغيل:  cd ~/ChronoTracker && python3 make_deals.py
 يُعاد تشغيله بعد كل تحديث بيانات (مدمج في update.command).
@@ -14,9 +15,10 @@ import pandas as pd
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 from watch_engine import WatchValuationEngine
 
-MIN_DISCOUNT = 0.08   # حد أدنى للخصم
-MIN_GROUP = 6         # المجموعة لازم ≥6 صفقات عشان العادل يكون موثوقاً
-WINDOW_DAYS = 730     # نخزّن صفقات آخر سنتين فقط (أخفّ على الجوال) — العادل من كل المبيعات
+CUR_DAYS   = 90      # النافذة الحالية (مؤخراً)
+PRIOR_DAYS = 365     # نهاية الفترة السابقة (من CUR_DAYS إلى PRIOR_DAYS)
+MIN_EACH   = 2       # حد أدنى للبيعات في كل فترة
+MIN_DROP   = 0.08    # حد أدنى لنسبة النزول
 
 
 def main():
@@ -24,58 +26,46 @@ def main():
     print("جاري تحميل المحرك ...")
     e = WatchValuationEngine()
     sold = e.sold
+    rd = e.ref_date
 
-    sizes = sold.groupby(['referance', 'cond2', 'fs'], observed=True).size()
-    big = list(sizes[sizes >= MIN_GROUP].index)
-    print(f"مجموعات مؤهلة (≥{MIN_GROUP} صفقة): {len(big)} / {len(sizes)}")
+    cut_cur = rd - pd.Timedelta(days=CUR_DAYS)
+    cut_prior = rd - pd.Timedelta(days=PRIOR_DAYS)
+    cur = sold[sold['priceDate'] >= cut_cur]
+    pri = sold[(sold['priceDate'] >= cut_prior) & (sold['priceDate'] < cut_cur)]
 
-    fair = {}
-    for i, (ref, c, f) in enumerate(big, 1):
-        try:
-            r = e.evaluate(str(ref), year=None, condition=str(c), full_set=(str(f) == 'Full'))
-            fair[(ref, c, f)] = r['fair'] if r.get('ok') else None
-        except Exception:
-            fair[(ref, c, f)] = None
-        if i % 200 == 0:
-            print(f"  {i}/{len(big)} ...")
-    print(f"حساب العادل تمّ في {time.time()-t0:.1f}s")
+    g = ['referance', 'cond2', 'fs']
+    m = (cur.groupby(g, observed=True)['soldPrice'].agg(cm='median', cn='size')
+           .join(pri.groupby(g, observed=True)['soldPrice'].agg(pm='median', pn='size'),
+                 how='inner'))
+    info = sold.groupby('referance', observed=True).agg(
+        brand=('brand', 'first'), model=('model', 'first'))
 
-    cut2y = e.ref_date - pd.Timedelta(days=WINDOW_DAYS)
     deals = []
-    s = sold[['referance', 'brand', 'model', 'soldPrice', 'priceDate',
-              'cond2', 'fs', 'year', 'pageName']]
-    for ref, br, mo, p, dt, c2, fv2, yr, pg in zip(
-            s['referance'], s['brand'], s['model'], s['soldPrice'], s['priceDate'],
-            s['cond2'], s['fs'], s['year'], s['pageName']):
-        if dt < cut2y:                       # نخزّن آخر سنتين فقط
+    for (ref, c, f), r in m.iterrows():
+        if r['cn'] < MIN_EACH or r['pn'] < MIN_EACH:
             continue
-        fv = fair.get((ref, c2, fv2))
-        if not fv or not p or p <= 0:
+        now, prev = int(round(r['cm'])), int(round(r['pm']))
+        if prev <= 0:
             continue
-        price_i, fair_i = int(round(p)), int(round(fv))
-        if fair_i <= 0:
+        drop = (prev - now) / prev      # من القيم المُخزّنة نفسها (متسق مع العرض)
+        if drop < MIN_DROP:
             continue
-        disc = (fair_i - price_i) / fair_i   # من القيم المُخزّنة نفسها (متسق مع العرض)
-        if disc < MIN_DISCOUNT:
-            continue
+        bm = info.loc[ref]
         deals.append({
             'ref': str(ref),
-            'brand': str(br),
-            'model': str(mo).strip(),
-            'price': price_i,
-            'fair': fair_i,
-            'discount': round(disc * 100),
-            'date': dt.strftime('%Y-%m-%d'),
-            'source': ('' if str(pg) == 'nan' else str(pg)),
-            'cond': ('غير مستخدمة' if str(c2).startswith('Unworn') else 'مستخدمة'),
-            'fs': ('Full Set' if str(fv2).startswith('Full') else 'ناقص'),
-            'year': (int(yr) if (yr == yr) else None),
+            'brand': str(bm['brand']),
+            'model': str(bm['model']).strip(),
+            'drop': round(drop * 100),
+            'now': now,
+            'prev': prev,
+            'count': int(r['cn']),       # عدد البيعات في النافذة الحالية (آخر 90 يوم)
+            'cond': ('غير مستخدمة' if str(c).startswith('Unworn') else 'مستخدمة'),
+            'fs': ('Full Set' if str(f).startswith('Full') else 'ناقص'),
         })
 
-    deals.sort(key=lambda d: d['discount'], reverse=True)
+    deals.sort(key=lambda d: d['drop'], reverse=True)
     json.dump(deals, open('deals.json', 'w', encoding='utf-8'), ensure_ascii=False)
-    sz = os.path.getsize('deals.json') / 1024
-    print(f"✓ deals.json: {len(deals):,} صفقة، {sz:.0f} KB، في {time.time()-t0:.1f}s")
+    print(f"✓ deals.json: {len(deals)} مرجع نازل ≥{int(MIN_DROP*100)}%، في {time.time()-t0:.1f}s")
 
 
 if __name__ == '__main__':
