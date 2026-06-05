@@ -118,5 +118,53 @@
  "Parmigiani Fleurier": {
   "file": "Parmigiani_Fleurier.png",
   "dark": false
+ },
+ "Rolex": {
+  "file": "Rolex.png",
+  "dark": false
+ },
+ "Tag Heuer": {
+  "file": "Tag_Heuer.png",
+  "dark": false
+ },
+ "Vacheron Constantin": {
+  "file": "Vacheron_Constantin.png",
+  "dark": false
+ },
+ "Panerai": {
+  "file": "Panerai.png",
+  "dark": false
+ },
+ "Zenith": {
+  "file": "Zenith.png",
+  "dark": false
+ },
+ "Piaget": {
+  "file": "Piaget.png",
+  "dark": false
+ },
+ "Richard Mille": {
+  "file": "Richard_Mille.png",
+  "dark": false
+ },
+ "Roger Dubuis": {
+  "file": "Roger_Dubuis.png",
+  "dark": false
+ },
+ "Oris": {
+  "file": "Oris.png",
+  "dark": false
+ },
+ "Swatch": {
+  "file": "Swatch.png",
+  "dark": false
+ },
+ "Breitling": {
+  "file": "Breitling.png",
+  "dark": false
+ },
+ "IWC": {
+  "file": "IWC.svg",
+  "dark": false
  }
 }
