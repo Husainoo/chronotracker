@@ -525,6 +525,8 @@ class WatchValuationEngine:
             'reference': reference, 'year': year, 'condition': condition,
             'full_set': full_set,
             'fair': round(fair), 'low': round(lo), 'high': round(hi),
+            # بيانات غير كافية: النطاق منهار (يحدث فقط للمراجع شبه-الفارغة ≤2 بيعة)
+            'insufficient': bool(round(lo) >= round(hi)),
             'n_sold': len(comps), 'n_recent': len(pool),
             'base': round(base), 'base_year': int(base_year),
             'adjustments': notes, 'demand': demand,

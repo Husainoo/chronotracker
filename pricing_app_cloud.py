@@ -873,20 +873,21 @@ function render(d){
   const estBadge = d.estimated
     ? `<div style="margin:10px auto 0;max-width:420px;display:flex;align-items:center;justify-content:center;gap:7px;padding:7px 12px;border-radius:10px;background:rgba(201,162,39,.13);border:1px solid rgba(201,162,39,.4);color:#e8c860;font-size:12px;font-weight:600;text-align:center">🔶 تقديري — لا توجد بيعات لنفس الحالة بهذه السنة؛ مبني على نفس الحالة عبر كل السنوات (ثقة منخفضة)</div>`
     : '';
-  out.innerHTML = `
-    <div style="display:flex;justify-content:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
-      <button onclick="newSearch()" style="display:inline-flex;align-items:center;gap:7px;padding:8px 18px;border-radius:10px;background:var(--surface2);border:1px solid var(--line);color:var(--text);font-family:inherit;font-size:13px;font-weight:600;cursor:pointer">↑ بحث جديد</button>
-      <button id="favBtn" data-ref="${d.reference}" onclick="toggleFav(this)"
-        style="display:inline-flex;align-items:center;gap:7px;padding:8px 18px;border-radius:10px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.4);color:#e8c860;font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s">
-        <span class="favStar">☆</span> <span class="favTxt">أضف للمفضّلة</span>
-      </button>
-    </div>
-    ${imgHtml}
-    <div style="text-align:center;margin-bottom:6px;font-size:15px;font-weight:600">${title}</div>
-    <div style="text-align:center;margin-bottom:14px;font-family:'Space Mono',monospace;color:var(--muted);font-size:12px">
-      ${d.reference} · ${d.condition==='Unworn'?'غير مستخدمة':'مستخدمة'}${d.year?' · '+d.year:''}${d.full_set?' · Full Set':''}
-    </div>
-    ${reBar}
+  // بيانات غير كافية (نطاق منهار) — نعرض رسالة صادقة + البيعات الفعلية بدل رقم وهمي
+  const _sold = (d.recent_all||[]).filter(x=>x.sold);
+  const _salesRows = _sold.slice(0,8).map(x=>`
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 13px;border-bottom:1px solid var(--line);font-size:13px">
+        <span style="font-family:'Space Mono',monospace;color:var(--gold-soft);font-weight:700">${fmt(x.price)} <small style="color:var(--muted);font-weight:400">KWD</small></span>
+        <span style="color:var(--muted);font-size:12px">${x.date} · ${x.condition} · ${x.fullset}${x.year?' · '+x.year:''}</span>
+      </div>`).join('');
+  const insuffPanel = `
+    <div style="margin:6px auto 0;max-width:470px;padding:16px;border-radius:14px;background:rgba(226,75,74,.10);border:1px solid rgba(226,75,74,.35)">
+      <div style="font-size:16px;font-weight:700;color:#f5a3a3;text-align:center;margin-bottom:6px">⚠️ بيانات غير كافية للتقييم</div>
+      <div style="font-size:13px;color:var(--muted);text-align:center;margin-bottom:12px;line-height:1.7">عدد البيعات الفعلية قليل جداً (${fmt(d.n_sold)}) — ما نعرض سعراً تقديرياً مضلّلاً. هذي البيعات الموجودة فعلاً:</div>
+      <div style="background:var(--surface2);border-radius:10px;overflow:hidden">${_salesRows||'<div style="padding:12px;text-align:center;color:var(--muted);font-size:13px">لا توجد بيعات مطابقة</div>'}</div>
+      <div style="font-size:12px;color:var(--muted);text-align:center;margin-top:11px;line-height:1.7">جرّب تغيير الحالة أو السنة من القوائم أعلاه، أو راجع لاحقاً عند توفّر بيعات أكثر.</div>
+    </div>`;
+  const priceSection = d.insufficient ? insuffPanel : `
     ${discBadge}
     <div class="price-main">
       <div class="lbl">السعر المقترح</div>
@@ -906,7 +907,22 @@ function render(d){
           <div style="font-size:13px;font-weight:700;color:#f5a3a3;font-family:'Space Mono',monospace">فوق ${fmt(d.high)}</div>
         </div>
       </div>
+    </div>`;
+  out.innerHTML = `
+    <div style="display:flex;justify-content:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+      <button onclick="newSearch()" style="display:inline-flex;align-items:center;gap:7px;padding:8px 18px;border-radius:10px;background:var(--surface2);border:1px solid var(--line);color:var(--text);font-family:inherit;font-size:13px;font-weight:600;cursor:pointer">↑ بحث جديد</button>
+      <button id="favBtn" data-ref="${d.reference}" onclick="toggleFav(this)"
+        style="display:inline-flex;align-items:center;gap:7px;padding:8px 18px;border-radius:10px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.4);color:#e8c860;font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s">
+        <span class="favStar">☆</span> <span class="favTxt">أضف للمفضّلة</span>
+      </button>
     </div>
+    ${imgHtml}
+    <div style="text-align:center;margin-bottom:6px;font-size:15px;font-weight:600">${title}</div>
+    <div style="text-align:center;margin-bottom:14px;font-family:'Space Mono',monospace;color:var(--muted);font-size:12px">
+      ${d.reference} · ${d.condition==='Unworn'?'غير مستخدمة':'مستخدمة'}${d.year?' · '+d.year:''}${d.full_set?' · Full Set':''}
+    </div>
+    ${reBar}
+    ${priceSection}
     ${marketHtml?SD+marketHtml:''}
     ${salesYear?SD+salesYear:''}
     ${specs?SD+specs:''}
