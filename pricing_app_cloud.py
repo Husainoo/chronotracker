@@ -471,6 +471,7 @@ HTML = r"""<!DOCTYPE html>
 
 <script>
 let selectedRef = null, activeIdx = -1, curResults = [];
+let curReq = {ref:null, cond:'Pre-owned', fs:'1', year:''};   // آخر طلب تقييم ناجح
 const $ = id => document.getElementById(id);
 
 function pickSeg(group){
@@ -673,12 +674,9 @@ function wireChart(){
 $('go').onclick = async ()=>{
   if(!selectedRef) return;
   $('go').disabled = true; $('go').textContent = 'جارٍ الحساب ...';
-  const p = new URLSearchParams({
-    ref:selectedRef, cond:segVal('cond'), fs:segVal('fs'),
-    year:$('year').value
-  });
+  curReq = {ref:selectedRef, cond:segVal('cond'), fs:segVal('fs'), year:$('year').value};
   try{
-    const r = await fetch('/api/evaluate?'+p);
+    const r = await fetch('/api/evaluate?'+new URLSearchParams(curReq));
     const d = await r.json();
     render(d);
   }catch(err){
@@ -687,6 +685,25 @@ $('go').onclick = async ()=>{
   }
   $('go').disabled = false; $('go').textContent = 'احصل على التقييم';
 };
+
+// إعادة التقييم من القوائم المنسدلة داخل بطاقة النتيجة (نفس الساعة، قيم جديدة)
+async function reEval(){
+  if(!curReq.ref) return;
+  const nc=$('reCond').value, nf=$('reFs').value, ny=$('reYear').value;
+  const p=new URLSearchParams({ref:curReq.ref, cond:nc, fs:nf, year:ny});
+  try{
+    const r=await fetch('/api/evaluate?'+p);
+    const d=await r.json();
+    if(!d.ok){ toast(d.msg||'لا توجد بيانات كافية لهذا الخيار'); restoreReSelects(); return; }
+    curReq={ref:curReq.ref, cond:nc, fs:nf, year:ny};
+    render(d);
+  }catch(e){ toast('خطأ في إعادة الحساب'); restoreReSelects(); }
+}
+function restoreReSelects(){
+  if($('reCond')) $('reCond').value=curReq.cond;
+  if($('reFs'))   $('reFs').value=curReq.fs;
+  if($('reYear')) $('reYear').value=curReq.year;
+}
 
 function render(d){
   const out = $('out');
@@ -837,6 +854,22 @@ function render(d){
       <div class="helpbox" id="help-market"><div class="ht">حرارة السوق</div><b>نسبة البيع</b> = كم ساعة تبيع فعلاً من المعروض (باعت ÷ الكل) لنفس الحالة. التصنيفات:<br><span style="color:#f5a3a3">🔥 سوق حار (70%+):</span> طلب قوي، بيع سريع، السعر يميل للصعود.<br><span style="color:#ecc964">⚖️ سوق متوازن (45-70%):</span> العرض والطلب متقاربان.<br><span style="color:#9ec7f0">❄️ سوق بطيء (أقل من 45%):</span> عرض زائد، فرصة شراء للصبور.</div>`;
   }
   const SD='<div class="sec-div"></div>';
+  // قوائم منسدلة لإعادة التقييم (السنة + الحالة + الطقم) — تبدأ على قيم البحث الحالية
+  const _sst="background:#222228;border:1px solid #2e2e36;border-radius:9px;color:#ececf0;padding:7px 11px;font-family:inherit;font-size:13px;cursor:pointer";
+  const _yrs=$('year')?Array.from($('year').options).map(o=>o.value).filter(v=>v):[];
+  const _yopt=`<option value="" ${!curReq.year?'selected':''}>السنة: الكل</option>`+
+    _yrs.map(y=>`<option value="${y}" ${String(y)===String(curReq.year)?'selected':''}>${y}</option>`).join('');
+  const reBar=`<div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:0 0 16px">
+      <select id="reCond" onchange="reEval()" style="${_sst}">
+        <option value="Pre-owned" ${curReq.cond==='Pre-owned'?'selected':''}>مستخدمة</option>
+        <option value="Unworn" ${curReq.cond==='Unworn'?'selected':''}>غير مستخدمة</option>
+      </select>
+      <select id="reFs" onchange="reEval()" style="${_sst}">
+        <option value="1" ${String(curReq.fs)==='1'?'selected':''}>فل ست</option>
+        <option value="0" ${String(curReq.fs)==='0'?'selected':''}>غير كامل</option>
+      </select>
+      <select id="reYear" onchange="reEval()" style="${_sst}">${_yopt}</select>
+    </div>`;
   out.innerHTML = `
     <div style="display:flex;justify-content:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
       <button onclick="newSearch()" style="display:inline-flex;align-items:center;gap:7px;padding:8px 18px;border-radius:10px;background:var(--surface2);border:1px solid var(--line);color:var(--text);font-family:inherit;font-size:13px;font-weight:600;cursor:pointer">↑ بحث جديد</button>
@@ -850,6 +883,7 @@ function render(d){
     <div style="text-align:center;margin-bottom:14px;font-family:'Space Mono',monospace;color:var(--muted);font-size:12px">
       ${d.reference} · ${d.condition==='Unworn'?'غير مستخدمة':'مستخدمة'}${d.year?' · '+d.year:''}${d.full_set?' · Full Set':''}
     </div>
+    ${reBar}
     ${discBadge}
     <div class="price-main">
       <div class="lbl">السعر المقترح</div>
