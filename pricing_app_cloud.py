@@ -27,6 +27,7 @@ APP_PASSWORD = os.getenv('APP_PASSWORD', 'chronotracker2024')  # غيّر في �
 CSV_PATH = os.getenv('CSV_PATH', 'chronotracker_complete_v2.csv')
 DISC_CSV = os.getenv('DISC_CSV', 'discontinued_rolex.csv')
 IMAGES_DIR = os.getenv('IMAGES_PATH', 'images')
+LOGOS_DIR = os.getenv('LOGOS_PATH', 'logos')
 FAVORITES_FILE = 'favorites.json'
 
 # المحرك والفهرس ثقيلان — يُحمّلان في boot() بعد فتح المنفذ مباشرة (انظر __main__).
@@ -38,6 +39,7 @@ _REF_INFO = {}
 _REF_SIZE = {}
 HOTTEST = []
 BROWSE_BRANDS = []
+LOGOS = {}
 BROWSE_FAMILIES = {}
 BROWSE_REFS = {}
 DEALS = []
@@ -45,7 +47,7 @@ DEALS = []
 def boot():
     """تحميل المحرك وبناء فهرس البحث. يُستدعى بعد ربط المنفذ مباشرة."""
     global ENGINE, SEARCH_INDEX, _years_by_ref, _REF_INFO, _REF_SIZE, HOTTEST
-    global BROWSE_BRANDS, BROWSE_FAMILIES, BROWSE_REFS, DEALS
+    global BROWSE_BRANDS, BROWSE_FAMILIES, BROWSE_REFS, DEALS, LOGOS
     print("جاري تحميل المحرك والبيانات ...")
     ENGINE = WatchValuationEngine(csv_path=CSV_PATH, discontinued_csv=DISC_CSV)
 
@@ -115,6 +117,15 @@ def boot():
             brand_fams[b].append(fam)
         brand_sales[b] = brand_sales.get(b, 0) + m['n']
         fam_sales[key] = fam_sales.get(key, 0) + m['n']
+    # شعارات الماركات (logos/manifest.json) — {brand: {file, dark}}
+    LOGOS = {}
+    try:
+        _mf = os.path.join(LOGOS_DIR, 'manifest.json')
+        if os.path.exists(_mf):
+            LOGOS = json.load(open(_mf, encoding='utf-8'))
+    except Exception:
+        LOGOS = {}
+
     BROWSE_BRANDS = []
     for b in sorted(brand_fams, key=lambda x: brand_sales.get(x, 0), reverse=True):
         img = None
@@ -122,7 +133,10 @@ def boot():
             img = _first_img(fam_refs[(b, fam)])
             if img:
                 break
-        BROWSE_BRANDS.append({'brand': b, 'image': img, 'families': len(brand_fams[b])})
+        lg = LOGOS.get(b)
+        BROWSE_BRANDS.append({'brand': b, 'image': img, 'families': len(brand_fams[b]),
+                              'logo': ('/logos/' + quote(lg['file'])) if lg else None,
+                              'logo_dark': bool(lg.get('dark')) if lg else False})
     BROWSE_FAMILIES = {}
     for b in brand_fams:
         fams = sorted(brand_fams[b], key=lambda f: fam_sales.get((b, f), 0), reverse=True)
@@ -1234,6 +1248,9 @@ BROWSE_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
   .bcard:hover{border-color:rgba(201,162,39,.5);transform:translateY(-3px)}
   .bcard .imgbox{width:100%;aspect-ratio:1;background:#fff;display:flex;align-items:center;justify-content:center;padding:10px}
   .bcard .imgbox img{max-width:100%;max-height:100%;object-fit:contain}
+  .bcard .imgbox.logobox{background:#fff}
+  .bcard .imgbox.logobox.dark{background:#15151a}
+  .bcard .imgbox.logobox img.logo{max-width:72%;max-height:52%;object-fit:contain}
   .bcard .ttl{padding:10px 8px 2px;text-align:center;color:var(--text);font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .bcard .ttl.gold{font-family:'Space Mono',monospace;color:var(--gold-soft);font-weight:700}
   .bcard .sub{padding:0 8px 10px;text-align:center;color:var(--muted);font-size:11px}
@@ -1250,17 +1267,25 @@ BROWSE_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
 var SKETCH = '<svg viewBox="0 0 60 60" width="46" height="46" aria-hidden="true" fill="none" stroke="#a8a8b0" stroke-width="2" style="width:58px;height:58px"><rect x="25" y="6" width="10" height="11" rx="2"/><rect x="25" y="43" width="10" height="11" rx="2"/><circle cx="30" cy="30" r="19"/><circle cx="30" cy="30" r="13"/><line x1="30" y1="30" x2="30" y2="21" stroke-linecap="round"/><line x1="30" y1="30" x2="37" y2="31" stroke-linecap="round"/></svg>';
 const $=id=>document.getElementById(id);
 const P=new URLSearchParams(location.search), brand=P.get('brand'), family=P.get('family');
-function card(href,img,title,sub,gold){
-  const im = img
-    ? `<img src="${img}" alt="${title}" onerror="this.parentElement.innerHTML=SKETCH">`
-    : SKETCH;
-  return `<a class="bcard" href="${href}"><div class="imgbox">${im}</div><div class="ttl ${gold?'gold':''}">${title}</div>${sub?`<div class="sub">${sub}</div>`:''}</a>`;
+function logoErr(el,img){
+  const box=el.closest('.imgbox'); box.classList.remove('logobox','dark');
+  box.innerHTML = img ? `<img src="${img}" alt="" onerror="this.parentElement.innerHTML=SKETCH">` : SKETCH;
+}
+function card(href,img,title,sub,gold,logo,dark){
+  let box;
+  if(logo){
+    box = `<div class="imgbox logobox${dark?' dark':''}"><img class="logo" src="${logo}" alt="${title}" onerror="logoErr(this,${img?`'${img}'`:'null'})"></div>`;
+  } else {
+    const im = img ? `<img src="${img}" alt="${title}" onerror="this.parentElement.innerHTML=SKETCH">` : SKETCH;
+    box = `<div class="imgbox">${im}</div>`;
+  }
+  return `<a class="bcard" href="${href}">${box}<div class="ttl ${gold?'gold':''}">${title}</div>${sub?`<div class="sub">${sub}</div>`:''}</a>`;
 }
 async function load(u){const r=await fetch(u);return await r.json();}
 async function renderBrands(){
   $('title').textContent='تصفّح بالصور — كل الماركات'; $('crumb').innerHTML='';
   const l=await load('/api/brands'); $('grid').className='grid';
-  $('grid').innerHTML=l.map(b=>card('/browse?brand='+encodeURIComponent(b.brand),b.image,b.brand,b.families+' عائلة',false)).join('');
+  $('grid').innerHTML=l.map(b=>card('/browse?brand='+encodeURIComponent(b.brand),b.image,b.brand,b.families+' عائلة',false,b.logo,b.logo_dark)).join('');
 }
 async function renderFamilies(b){
   $('title').textContent=b; $('crumb').innerHTML='<a href="/browse">← كل الماركات</a>';
@@ -1588,6 +1613,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send(200, HTML, 'text/html')
         elif path.startswith('/images/'):
             self._serve_image(path)
+        elif path.startswith('/logos/'):
+            self._serve_logo(path)
         elif path == '/api/search':
             q = parse_qs(u.query).get('q', [''])[0]
             favset = set(load_favorites())
@@ -1712,6 +1739,27 @@ class RequestHandler(BaseHTTPRequestHandler):
                     data = f.read()
                 self.send_response(200)
                 self.send_header('Content-Type', 'image/jpeg')
+                self.send_header('Cache-Control', 'max-age=86400')
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            except Exception:
+                pass
+        self.send_response(404)
+        self.end_headers()
+
+    def _serve_logo(self, path):
+        fname = os.path.basename(unquote(path[len('/logos/'):]))
+        full = os.path.join(LOGOS_DIR, fname)
+        if os.path.isfile(full):
+            ext = fname.rsplit('.', 1)[-1].lower()
+            ctype = {'svg': 'image/svg+xml', 'png': 'image/png', 'jpg': 'image/jpeg',
+                     'jpeg': 'image/jpeg', 'webp': 'image/webp'}.get(ext, 'application/octet-stream')
+            try:
+                with open(full, 'rb') as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', ctype)
                 self.send_header('Cache-Control', 'max-age=86400')
                 self.end_headers()
                 self.wfile.write(data)
