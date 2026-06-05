@@ -870,6 +870,9 @@ function render(d){
       </select>
       <select id="reYear" onchange="reEval()" style="${_sst}">${_yopt}</select>
     </div>`;
+  const estBadge = d.estimated
+    ? `<div style="margin:10px auto 0;max-width:420px;display:flex;align-items:center;justify-content:center;gap:7px;padding:7px 12px;border-radius:10px;background:rgba(201,162,39,.13);border:1px solid rgba(201,162,39,.4);color:#e8c860;font-size:12px;font-weight:600;text-align:center">🔶 تقديري — لا توجد بيعات لنفس الحالة بهذه السنة؛ مبني على نفس الحالة عبر كل السنوات (ثقة منخفضة)</div>`
+    : '';
   out.innerHTML = `
     <div style="display:flex;justify-content:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
       <button onclick="newSearch()" style="display:inline-flex;align-items:center;gap:7px;padding:8px 18px;border-radius:10px;background:var(--surface2);border:1px solid var(--line);color:var(--text);font-family:inherit;font-size:13px;font-weight:600;cursor:pointer">↑ بحث جديد</button>
@@ -888,6 +891,7 @@ function render(d){
     <div class="price-main">
       <div class="lbl">السعر المقترح</div>
       <div class="val">${fmt(d.fair)} <small>KWD</small></div>
+      ${estBadge}
       <div style="display:flex;border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,.1);max-width:420px;margin:14px auto 0">
         <div style="flex:1;background:rgba(63,178,127,.15);padding:9px 6px;text-align:center;border-left:1px solid rgba(255,255,255,.08)">
           <div style="font-size:10px;color:#5dcaa5;margin-bottom:3px;font-weight:600">✅ صفقة</div>

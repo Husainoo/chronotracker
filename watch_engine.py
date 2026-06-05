@@ -218,8 +218,15 @@ class WatchValuationEngine:
         # لنفس السنة المختارة، نعتمد عليها مباشرة (أدق من التعديل النظري).
         # مهم: نحترم القفزة والحداثة — نفس منطق الحساب الأساسي.
         year_adj_note = None
+        estimated = False
         if year is not None:
             same_year_all = comps[comps['year'] == year]
+            want_cond = 'Unworn' if condition == 'Unworn' else 'Pre-owned'
+            # بيعات حقيقية لنفس السنة + نفس الحالة المطلوبة — تُحسب من كامل سجل المرجع
+            # (مستقلة عن تصفية القفزة) عشان ما نمسّ أي حالة فيها بيانات حقيقية أصلاً.
+            ref_all = self.sold[self.sold['referance'] == reference]
+            sy_cond_n = int(((ref_all['year'] == year) &
+                             (ref_all['cond2'] == want_cond)).sum())
             # لو فيه قفزة، نستخدم فقط بيعات نفس السنة بعد القفزة
             if jump_date is not None:
                 same_year = same_year_all[same_year_all['priceDate'] >= jump_date]
@@ -234,7 +241,34 @@ class WatchValuationEngine:
                         break
                 else:
                     same_year = same_year_all
-            if len(same_year) >= 4:
+            if sy_cond_n == 0:
+                # لا توجد ولا بيعة حقيقية للحالة المطلوبة بنفس السنة → لا نثبّت على السنة
+                # بخصم ثابت من حالة أخرى (مثلاً مستخدمة مستنتجة من جديدة)؛ بدالها نبني
+                # أساساً من بيعات «نفس الحالة» الحقيقية عبر كل السنوات، ونوسمه «تقديري».
+                cond_pool = comps[comps['cond2'] == want_cond]
+                cp = cond_pool
+                for win_ in (180, 365, 730, 100000):
+                    cand = cond_pool[cond_pool['priceDate'] >=
+                                     self.ref_date - pd.Timedelta(days=win_)]
+                    if len(cand) >= 4:
+                        cp = cand
+                        break
+                if len(cp) >= 1:
+                    cp_norm = cp.apply(lambda r: r['soldPrice'] / factor(
+                        r['year'] if pd.notna(r['year']) else ref_year,
+                        r['cond2'] == 'Unworn', r['fs'] == 'Full'), axis=1).values
+                    cp_w = 0.5 ** ((self.ref_date - cp['priceDate']).dt.days.values / halflife)
+                    cp_base = self._wmedian(cp_norm, cp_w)
+                    fair = cp_base * factor(year, condition == 'Unworn', full_set)
+                    estimated = True
+                    cond_lbl = 'غير مستخدمة' if condition == 'Unworn' else 'مستخدمة'
+                    year_adj_note = (f"تقديري: لا توجد بيعات ({cond_lbl}) لموديل {int(year)}؛ "
+                                     f"مبني على {len(cp)} بيعة فعلية لنفس الحالة عبر كل السنوات")
+                    cp_med = np.median(cp_norm)
+                    cp_lo, cp_hi = np.percentile(cp_norm, [25, 75])
+                    lo_y = fair * (cp_lo / cp_med if cp_med else 0.92)
+                    hi_y = fair * (cp_hi / cp_med if cp_med else 1.08)
+            elif len(same_year) >= 4:
                 sy_norm = same_year.apply(lambda r: r['soldPrice'] / factor(
                     year, r['cond2'] == 'Unworn', r['fs'] == 'Full'), axis=1).values
                 # ترجيح حداثة أقوى (نصف العمر 45 يوم بدل 75) — يعكس السعر الحالي
@@ -474,7 +508,8 @@ class WatchValuationEngine:
             'jump_date': (jump_date.strftime('%Y-%m') if jump_date is not None else None),
             'discontinued_year': disc_year,
             'discontinued_reason': disc_reason,
-            'confidence': self._conf(len(pool), len(comps)),
+            'estimated': estimated,
+            'confidence': 'منخفضة' if estimated else self._conf(len(pool), len(comps)),
             'narrative': narrative,
             'recent_sales': recent_sales,
             'recent_all': recent_all,
