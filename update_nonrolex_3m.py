@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-ChronoTracker — تحديث غير-Rolex لآخر 90 يوم فقط (عبر صفحة المزادات)
+ChronoTracker — تحديث غير-Rolex تزايدي (عبر صفحة المزادات)
 ==================================================================
-يمرّ على صفحة GetAuctions (الأحدث أولاً)، يأخذ كل الماركات ماعدا Rolex،
-ويتوقّف عند تجاوز نافذة الـ 90 يوم (حقل `date` بعنصر القائمة). لكل
-auctionWatchId جديد يجلب التفاصيل الكاملة (29 عمود) ويدمجها في
-chronotracker_complete_v2.csv بمفتاح auctionWatchId — إضافة فقط:
-لا يحذف أي صف، ولا يلمس صفوف Rolex (عشان ما يتعارض مع ملف رولكس).
+تحديث تزايدي مثل محدّث الروليكس: يمرّ على GetAuctions (الأحدث أولاً)، يأخذ كل
+الماركات ماعدا Rolex، ويتوقّف لما يوصل المزادات المعروفة (الموجودة بالـ CSV) —
+بعد سلسلة من صفحتين متتاليتين بلا أي غير-Rolex جديد (مو عند أول معروف). حد أمان:
+لو ما لقى معروفين، لا يمسح أقدم من ~120 يوم. لكل auctionWatchId جديد يجلب
+التفاصيل الكاملة (29 عمود) ويدمجها في chronotracker_complete_v2.csv بمفتاح
+auctionWatchId — إضافة فقط: لا يحذف أي صف، ولا يلمس صفوف Rolex.
 
 منفصل تماماً عن weekly_update_auctions.py (ملفات تقدّم/سجل مستقلة):
   • nonrolex_progress.json   — تقدّم قابل للاستئناف (مسح + جلب)
@@ -36,9 +37,10 @@ IMAGES_DIR    = "images"
 GET_AUCTIONS = "https://api.chronotracker.com/api/Auctions/GetAuctions"
 BY_AUC       = "https://api.chronotracker.com/api/Watch/GetWatchByAuction"
 
-CUR_DAYS          = 90     # النافذة الزمنية (آخر 90 يوم)
-PAST_WINDOW_PAGES = 2      # نوقف بعد صفحتين كاملتين أقدم من النافذة (أمان للترتيب)
-MAX_PAGES         = 400    # سقف أمان (90 يوم ≈ 112 صفحة بحجم صفحة 20)
+# تحديث تزايدي: نمسح الأحدث-أولاً ونوقف لما نوصل المزادات المعروفة (الموجودة بالـ CSV)
+STOP_KNOWN_PAGES = 2       # نوقف بعد كم صفحة متتالية بلا أي غير-Rolex جديد (سلسلة، مو أول معروف)
+SAFETY_DAYS      = 120     # حد أمان: لو ما لقينا معروفين، لا نمسح أقدم من هذا
+MAX_PAGES        = 400     # سقف أمان للصفحات
 
 # السلوك البشري — مطابق لـ weekly_update_auctions.py حرفياً
 DELAY_MIN = 2.0
@@ -221,8 +223,9 @@ def main():
     if not os.path.exists(MASTER_CSV):
         sys.exit(f"⚠️  ما لقيت {MASTER_CSV} بنفس المجلد.")
     headers = make_headers(load_token())
-    cutoff = datetime.now() - timedelta(days=CUR_DAYS)
-    print(f"النافذة: من {cutoff.date()} حتى اليوم (آخر {CUR_DAYS} يوم) — كل الماركات ماعدا Rolex")
+    safety_cut = datetime.now() - timedelta(days=SAFETY_DAYS)   # حد أمان لو ما لقينا معروفين
+    print(f"تحديث تزايدي (كل الماركات ماعدا Rolex) — نوقف عند المزادات المعروفة "
+          f"(حد أمان: لا نمسح أقدم من {safety_cut.date()}).")
 
     print("جاري قراءة بياناتك الحالية ...")
     all_rows, have_awid = [], set()
@@ -248,12 +251,12 @@ def main():
             seen_new = set(prog.get("seen_new", []))
             ref_img = dict(prog.get("ref_img", {}))
             page = int(prog.get("page", 1))
-            past_streak = int(prog.get("past_streak", 0))
+            known_streak = int(prog.get("known_streak", 0))
             print(f"↻ استكمال المسح من صفحة {page} ({len(to_fetch)} مكتشَف حتى الآن).")
         else:
             to_fetch, seen_new, ref_img = [], set(), {}
-            page, past_streak = 1, 0
-            print(f"\n▶ المرحلة 1: مسح المزادات لاكتشاف غير-Rolex بآخر {CUR_DAYS} يوم ...")
+            page, known_streak = 1, 0
+            print("\n▶ المرحلة 1: مسح المزادات (الأحدث-أولاً) حتى نوصل المعروفة ...")
 
         while page <= MAX_PAGES:
             try:
@@ -262,23 +265,22 @@ def main():
                 # نحفظ نفس الصفحة عشان يعيد محاولتها
                 save_progress({"phase": "discover", "page": page, "to_fetch": to_fetch,
                                "seen_new": list(seen_new), "ref_img": ref_img,
-                               "past_streak": past_streak})
+                               "known_streak": known_streak})
                 notify("ChronoTracker — تنبيه", "التوكن منتهي. جدّده وأعد التشغيل.")
                 sys.exit("⛔ التوكن منتهي. جدّد token.txt وأعد التشغيل — يكمل من نفس الصفحة.")
             if not items:
                 break
 
-            page_new, page_max = 0, None
+            page_new, page_known, page_max = 0, 0, None
             for it in items:
                 dt = parse_date(it.get("date"))
                 if dt and (page_max is None or dt > page_max):
                     page_max = dt
-                if dt and dt < cutoff:
-                    continue                       # أقدم من النافذة → تجاهل
                 if str(it.get("brand", "")).strip() == "Rolex":
                     continue                       # رولكس → نتركه لملف رولكس
                 awid = str(it.get("auctionWatchId", "")).strip()
                 if awid in have_awid or awid in seen_new:
+                    page_known += 1                # غير-Rolex معروف (موجود بالـ CSV)
                     continue
                 seen_new.add(awid)
                 ref = str(it.get("reference", "")).strip()
@@ -290,21 +292,29 @@ def main():
                 page_new += 1
 
             md = page_max.date() if page_max else "?"
-            print(f"  صفحة {page}: {len(items)} ساعة (أحدث {md})، {page_new} غير-Rolex جديد بالنافذة")
-            past_streak = (past_streak + 1) if (page_max and page_max < cutoff) else 0
+            print(f"  صفحة {page}: {len(items)} ساعة (أحدث {md})، {page_new} غير-Rolex جديد، "
+                  f"{page_known} معروف")
+            # سلسلة المعروفة: صفحة بلا أي غير-Rolex جديد تزيد السلسلة؛ أي جديد يصفّرها
+            known_streak = (known_streak + 1) if page_new == 0 else 0
             page += 1
             # حفظ تقدّم المسح بعد كل صفحة (الاستئناف من الصفحة التالية)
             save_progress({"phase": "discover", "page": page, "to_fetch": to_fetch,
                            "seen_new": list(seen_new), "ref_img": ref_img,
-                           "past_streak": past_streak})
-            if past_streak >= PAST_WINDOW_PAGES:
-                print(f"  ⏹ توقف: {PAST_WINDOW_PAGES} صفحات أقدم من نافذة الـ{CUR_DAYS} يوم.")
+                           "known_streak": known_streak})
+            # توقف طبيعي: سلسلة متتالية بلا جديد (وصلنا المعروف)
+            if known_streak >= STOP_KNOWN_PAGES:
+                print(f"  ⏹ توقف: {STOP_KNOWN_PAGES} صفحات متتالية بلا غير-Rolex جديد "
+                      f"(وصلنا المزادات المعروفة).")
+                break
+            # حد أمان: لو ما لقينا معروفين والصفحة تجاوزت SAFETY_DAYS — لا نشرد للأقدم
+            if page_max and page_max < safety_cut:
+                print(f"  ⏹ توقف (حد أمان): تجاوزنا {SAFETY_DAYS} يوم بلا الوصول لسلسلة معروفة.")
                 break
             human_delay()
 
-        print(f"\n✓ اكتُشف {len(to_fetch)} ساعة غير-Rolex جديدة ضمن آخر {CUR_DAYS} يوم.")
+        print(f"\n✓ اكتُشف {len(to_fetch)} ساعة غير-Rolex جديدة.")
         if not to_fetch:
-            print("ما فيه غير-Rolex جديد بالنافذة. بياناتك محدّثة.")
+            print("ما فيه غير-Rolex جديد. بياناتك محدّثة.")
             notify("ChronoTracker", "ما فيه غير-Rolex جديد — بياناتك محدّثة.")
             _cleanup()
             return

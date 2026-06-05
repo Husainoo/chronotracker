@@ -59,7 +59,7 @@ git commit -m "Data update (non-Rolex 90d): $(date '+%Y-%m-%d %H:%M')
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
-if git push; then
+if git push -u origin main; then
   echo ""
   echo "✅ تم! Render بيعيد النشر تلقائياً بالبيانات الجديدة خلال دقائق."
 else
