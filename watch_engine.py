@@ -289,6 +289,32 @@ class WatchValuationEngine:
                 lo_y = fair * lo_ratio
                 hi_y = fair * hi_ratio
 
+                # تصحيح جراحي (ب): تثبيت نفس-الحالة فوق خلط-الحالات يحدث فقط لما
+                # تتوفّر ≥4 بيعات حقيقية لنفس السنة+نفس الحالة، ويختلف وسيطها ماديّاً
+                # (>3%) عن رقم خلط-الحالات. يصلّح حالات «التخفيف» (مثل مستخدمة 2025
+                # المسحوبة بغير-المستخدمة) دون لمس الحالات المتقاربة (العينات الكبيرة).
+                syc_all = same_year_all[same_year_all['cond2'] == want_cond]
+                syc = syc_all
+                for win_ in (120, 240, 365, 730):
+                    cand = syc_all[syc_all['priceDate'] >=
+                                   self.ref_date - pd.Timedelta(days=win_)]
+                    if len(cand) >= 4:
+                        syc = cand
+                        break
+                if len(syc) >= 4:
+                    scn = syc.apply(lambda r: r['soldPrice'] / factor(
+                        year, r['cond2'] == 'Unworn', r['fs'] == 'Full'), axis=1).values
+                    scw = 0.5 ** ((self.ref_date - syc['priceDate']).dt.days.values / 45.0)
+                    sc_fair = self._wmedian(scn, scw) * factor(year, condition == 'Unworn', full_set)
+                    if abs(sc_fair - fair) / fair > 0.03:
+                        year_adj_note = (f"تصحيح بناءً على {len(syc)} بيعة فعلية لنفس الحالة "
+                                         f"لموديل {int(year)} (من {round(fair):,} إلى {round(sc_fair):,})")
+                        fair = sc_fair
+                        sc_med = np.median(scn)
+                        sc_lo, sc_hi = np.percentile(scn, [25, 75])
+                        lo_y = fair * (sc_lo / sc_med if sc_med else 0.92)
+                        hi_y = fair * (sc_hi / sc_med if sc_med else 1.08)
+
         # شرح التعديلات من المرجع الموحّد
         notes = []
         if year and year != ref_year:
