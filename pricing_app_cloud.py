@@ -1411,6 +1411,7 @@ LATEST_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
   </div>
   <div class="filters">
     <select id="fBrand"><option value="all">الماركة: الكل</option></select>
+    <select id="fHouse"><option value="all">المزاد: الكل</option></select>
     <select id="fCond">
       <option value="all">الحالة: الكل</option>
       <option value="مستخدمة">مستخدمة</option>
@@ -1420,6 +1421,18 @@ LATEST_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
       <option value="all">الطقم: الكل</option>
       <option value="Full Set">فل ست</option>
       <option value="ناقص">غير كامل</option>
+    </select>
+    <select id="fPeriod">
+      <option value="all">المدة: الكل</option>
+      <option value="week">آخر أسبوع</option>
+      <option value="month">آخر شهر</option>
+      <option value="q">آخر ٣ أشهر</option>
+    </select>
+    <select id="fSort">
+      <option value="newest">الأحدث أولاً</option>
+      <option value="oldest">الأقدم أولاً</option>
+      <option value="exp">الأغلى أولاً</option>
+      <option value="cheap">الأرخص أولاً</option>
     </select>
   </div>
   <div class="count" id="count"></div>
@@ -1432,15 +1445,29 @@ const CAP=300;
 let LATEST=[];
 var SKETCH = '<svg viewBox="0 0 60 60" width="40" height="40" aria-hidden="true" fill="none" stroke="#a8a8b0" stroke-width="2" style="width:58px;height:58px"><rect x="25" y="6" width="10" height="11" rx="2"/><rect x="25" y="43" width="10" height="11" rx="2"/><circle cx="30" cy="30" r="19"/><circle cx="30" cy="30" r="13"/><line x1="30" y1="30" x2="30" y2="21" stroke-linecap="round"/><line x1="30" y1="30" x2="37" y2="31" stroke-linecap="round"/></svg>';
 function fmt(n){return Number(n).toLocaleString('en-US');}
+let MAXDATE=null;
 function applyFilters(){
-  const brand=$('fBrand').value, cond=$('fCond').value, fs=$('fFs').value;
-  let ds=LATEST;
+  const brand=$('fBrand').value, house=$('fHouse').value, cond=$('fCond').value,
+        fs=$('fFs').value, period=$('fPeriod').value, sort=$('fSort').value;
+  let ds=LATEST.slice();
   if(brand!=='all') ds=ds.filter(d=>d.brand===brand);
+  if(house!=='all') ds=ds.filter(d=>d.house===house);
   if(cond!=='all') ds=ds.filter(d=>d.cond===cond);
   if(fs!=='all') ds=ds.filter(d=>d.fs===fs);
+  if(period!=='all' && MAXDATE){
+    const days={week:7, month:30, q:90}[period];
+    const cut=new Date(MAXDATE); cut.setDate(cut.getDate()-days);
+    const cs=cut.toISOString().slice(0,10);
+    ds=ds.filter(d=>d.date && d.date>=cs);
+  }
+  // الترتيب على القائمة المفلترة
+  if(sort==='oldest') ds.sort((a,b)=> a.date<b.date?-1 : a.date>b.date?1 : 0);
+  else if(sort==='exp') ds.sort((a,b)=> b.price-a.price);
+  else if(sort==='cheap') ds.sort((a,b)=> a.price-b.price);
+  else ds.sort((a,b)=> a.date>b.date?-1 : a.date<b.date?1 : 0); // newest (افتراضي)
   const total=ds.length, shown=ds.slice(0,CAP);
   $('count').textContent = total
-    ? `${fmt(total)} مبيع` + (total>CAP?` — معروض أحدث ${CAP}`:'')
+    ? `${fmt(total)} مبيع` + (total>CAP?` — معروض أول ${CAP}`:'')
     : 'لا توجد نتائج بهذه الفلاتر';
   $('list').innerHTML = shown.map(d=>`
     <a class="dcard" href="/?ref=${encodeURIComponent(d.ref)}">
@@ -1467,9 +1494,12 @@ async function load(){
     if(!Array.isArray(LATEST)) LATEST=[];
   }catch(e){ LATEST=[]; }
   if(!LATEST.length){ $('count').textContent=''; $('list').innerHTML='<div class="empty">لا توجد مبيعات.</div>'; return; }
+  MAXDATE=LATEST.reduce((a,d)=>(d.date&&d.date>a)?d.date:a, '');
   const brands=[...new Set(LATEST.map(d=>d.brand))].sort();
   const sel=$('fBrand'); brands.forEach(b=>{const o=document.createElement('option');o.value=b;o.textContent=b;sel.appendChild(o);});
-  ['fBrand','fCond','fFs'].forEach(id=>$(id).onchange=applyFilters);
+  const houses=[...new Set(LATEST.map(d=>d.house).filter(Boolean))].sort();
+  const hsel=$('fHouse'); houses.forEach(h=>{const o=document.createElement('option');o.value=h;o.textContent=h;hsel.appendChild(o);});
+  ['fBrand','fHouse','fCond','fFs','fPeriod','fSort'].forEach(id=>$(id).onchange=applyFilters);
   applyFilters();
 }
 load();
