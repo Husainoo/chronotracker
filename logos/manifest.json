@@ -166,5 +166,97 @@
  "IWC": {
   "file": "IWC.svg",
   "dark": false
+ },
+ "Arnold & son": {
+  "file": "Arnold___son.png",
+  "dark": false
+ },
+ "Bovet": {
+  "file": "Bovet.png",
+  "dark": false
+ },
+ "Breguet": {
+  "file": "Breguet.png",
+  "dark": false
+ },
+ "Cartier": {
+  "file": "Cartier.png",
+  "dark": false
+ },
+ "Christophe Claret": {
+  "file": "Christophe_Claret.png",
+  "dark": false
+ },
+ "Corum": {
+  "file": "Corum.png",
+  "dark": false
+ },
+ "Czapek": {
+  "file": "Czapek.png",
+  "dark": false
+ },
+ "Daniel Roth": {
+  "file": "Daniel_Roth.png",
+  "dark": false
+ },
+ "EBEL": {
+  "file": "EBEL.png",
+  "dark": false
+ },
+ "Furlan Marri": {
+  "file": "Furlan_Marri.png",
+  "dark": false
+ },
+ "GRAFF": {
+  "file": "GRAFF.png",
+  "dark": false
+ },
+ "Gaga Milano": {
+  "file": "Gaga_Milano.png",
+  "dark": false
+ },
+ "Gerald Charles": {
+  "file": "Gerald_Charles.png",
+  "dark": false
+ },
+ "Graham": {
+  "file": "Graham.png",
+  "dark": false
+ },
+ "H. Moser & Cie": {
+  "file": "H__Moser___Cie.png",
+  "dark": false
+ },
+ "Jacquet Droz": {
+  "file": "Jacquet_Droz.png",
+  "dark": false
+ },
+ "Jaeger-LeCoultre": {
+  "file": "Jaeger_LeCoultre.png",
+  "dark": false
+ },
+ "Jaquet Droz": {
+  "file": "Jaquet_Droz.png",
+  "dark": false
+ },
+ "Kurono Tokyo": {
+  "file": "Kurono_Tokyo.png",
+  "dark": false
+ },
+ "Patek Philippe": {
+  "file": "Patek_Philippe.png",
+  "dark": false
+ },
+ "Ressence": {
+  "file": "Ressence.png",
+  "dark": false
+ },
+ "Tudor": {
+  "file": "Tudor.png",
+  "dark": false
+ },
+ "Ulysse Nardin": {
+  "file": "Ulysse_Nardin.png",
+  "dark": false
  }
 }
