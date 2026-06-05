@@ -35,6 +35,7 @@ ENGINE = None
 SEARCH_INDEX = []
 _years_by_ref = {}
 _REF_INFO = {}
+_REF_SIZE = {}
 HOTTEST = []
 BROWSE_BRANDS = []
 BROWSE_FAMILIES = {}
@@ -43,7 +44,7 @@ DEALS = []
 
 def boot():
     """تحميل المحرك وبناء فهرس البحث. يُستدعى بعد ربط المنفذ مباشرة."""
-    global ENGINE, SEARCH_INDEX, _years_by_ref, _REF_INFO, HOTTEST
+    global ENGINE, SEARCH_INDEX, _years_by_ref, _REF_INFO, _REF_SIZE, HOTTEST
     global BROWSE_BRANDS, BROWSE_FAMILIES, BROWSE_REFS, DEALS
     print("جاري تحميل المحرك والبيانات ...")
     ENGINE = WatchValuationEngine(csv_path=CSV_PATH, discontinued_csv=DISC_CSV)
@@ -130,10 +131,20 @@ def boot():
     BROWSE_REFS = dict(fam_refs)
 
     # قائمة "الأكثر نزولاً" — مُولّدة مسبقاً في deals.json (وسطاء سعر البيع)
+    # خريطة المقاس لكل مرجع (الأكثر شيوعاً) — للعرض في /deals و /latest
+    try:
+        _sz = (ENGINE.sold.assign(_s=ENGINE.sold['size'].astype(str))
+               .groupby('referance', observed=True)['_s']
+               .agg(lambda s: s.mode().iloc[0] if not s.mode().empty else ''))
+        _REF_SIZE = {k: ('' if v in ('nan', 'None') else v) for k, v in _sz.to_dict().items()}
+    except Exception:
+        _REF_SIZE = {}
+
     try:
         DEALS = json.load(open('deals.json', encoding='utf-8')) if os.path.exists('deals.json') else []
-        for _d in DEALS:                       # نُثري بصورة المرجع (نفس مصدر التصفّح/النتيجة)
+        for _d in DEALS:                       # نُثري بصورة المرجع + المقاس
             _d['image'] = image_file_for(_d.get('ref', ''))
+            _d['size'] = _REF_SIZE.get(_d.get('ref', ''), '')
     except Exception:
         DEALS = []
 
@@ -209,17 +220,20 @@ def fav_list_detailed():
 def latest_sales(limit=500):
     """أحدث المبيعات من بيانات المحرك مباشرة (بالذاكرة، دائماً محدّثة)."""
     s = ENGINE.sold
-    cols = ['referance', 'brand', 'model', 'soldPrice', 'priceDate',
+    cols = ['referance', 'brand', 'model', 'size', 'soldPrice', 'priceDate',
             'pageName', 'cond2', 'fs']
     d = s[cols].sort_values('priceDate', ascending=False).head(limit)
     out = []
     for r in d.itertuples(index=False):
         hv = str(r.pageName)
         house = '' if hv in ('nan', 'None', '') else hv
+        sz = str(r.size)
+        sz = '' if sz in ('nan', 'None') else sz
         out.append({
             'ref': str(r.referance),
             'brand': str(r.brand),
             'model': str(r.model).strip(),
+            'size': sz,
             'price': int(round(r.soldPrice)),
             'date': r.priceDate.strftime('%Y-%m-%d') if pd.notna(r.priceDate) else '',
             'house': house,
@@ -404,15 +418,11 @@ HTML = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
-<a href="/" id="floatBack" style="position:fixed;top:16px;right:16px;z-index:100;display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:11px;background:rgba(201,162,39,.95);color:#0e0e10;text-decoration:none;font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;font-weight:700;box-shadow:0 4px 16px rgba(0,0,0,.4)">🏠 الرئيسية</a>
+<!--NAV-->
 <div class="wrap">
   <div class="head">
     <div class="mark">CHRONOTRACKER</div>
     <h1>مُسعّر الساعات</h1>
-    <a href="/favorites" style="display:inline-block;margin-top:12px;padding:8px 18px;border-radius:10px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.35);color:var(--gold-soft);text-decoration:none;font-size:13px;font-weight:600">⭐ ساعاتي المفضّلة</a>
-    <a href="/browse" style="display:inline-block;margin-top:12px;margin-right:8px;padding:8px 18px;border-radius:10px;background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.35);color:var(--gold-soft);text-decoration:none;font-size:13px;font-weight:600">🖼️ تصفّح بالصور</a>
-    <a href="/deals" style="display:inline-block;margin-top:12px;margin-right:8px;padding:8px 18px;border-radius:10px;background:rgba(224,98,94,.12);border:1px solid rgba(224,98,94,.4);color:#f5a3a3;text-decoration:none;font-size:13px;font-weight:600">📉 الأكثر نزولاً</a>
-    <a href="/latest" style="display:inline-block;margin-top:12px;margin-right:8px;padding:8px 18px;border-radius:10px;background:rgba(85,150,230,.12);border:1px solid rgba(85,150,230,.4);color:#9ec7f0;text-decoration:none;font-size:13px;font-weight:600">🆕 أحدث المبيعات</a>
   </div>
 
   <div class="hot-sec" id="hotSec" style="display:none">
@@ -1096,13 +1106,12 @@ FAV_HTML = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
-<a href="/" id="floatBack" style="position:fixed;top:16px;right:16px;z-index:100;display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:11px;background:rgba(201,162,39,.95);color:#0e0e10;text-decoration:none;font-family:'IBM Plex Sans Arabic',sans-serif;font-size:14px;font-weight:700;box-shadow:0 4px 16px rgba(0,0,0,.4)">🏠 الرئيسية</a>
+<!--NAV-->
 <div class="wrap">
   <div class="head">
     <div class="mark">CHRONOTRACKER</div>
     <h1>⭐ ساعاتي المفضّلة</h1>
     <p>الساعات اللي تتابعها — اضغط أي ساعة لتفاصيلها وتسعيرها</p>
-    <a href="/" class="back">← رجوع للمُسعّر</a>
   </div>
   <div id="grid"></div>
   <div class="foot">localhost · بياناتك تبقى على جهازك</div>
@@ -1177,14 +1186,14 @@ BROWSE_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
   .empty{text-align:center;color:var(--muted);padding:40px 20px;font-size:14px}
   .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:30px;font-family:'Space Mono',monospace}
 </style></head><body>
-<a href="/" class="home-btn">🏠 الرئيسية</a>
+<!--NAV-->
 <div class="wrap">
   <div class="head"><div class="mark">CHRONOTRACKER</div><h1 id="title">تصفّح بالصور</h1><div id="crumb" class="crumb"></div></div>
   <div id="grid"></div>
   <div class="foot">ChronoTracker</div>
 </div>
 <script>
-var SKETCH = '<svg viewBox="0 0 60 60" width="46" height="46" aria-hidden="true" fill="none" stroke="#a8a8b0" stroke-width="2"><rect x="25" y="6" width="10" height="11" rx="2"/><rect x="25" y="43" width="10" height="11" rx="2"/><circle cx="30" cy="30" r="19"/><circle cx="30" cy="30" r="13"/><line x1="30" y1="30" x2="30" y2="21" stroke-linecap="round"/><line x1="30" y1="30" x2="37" y2="31" stroke-linecap="round"/></svg>';
+var SKETCH = '<svg viewBox="0 0 60 60" width="46" height="46" aria-hidden="true" fill="none" stroke="#a8a8b0" stroke-width="2" style="width:58px;height:58px"><rect x="25" y="6" width="10" height="11" rx="2"/><rect x="25" y="43" width="10" height="11" rx="2"/><circle cx="30" cy="30" r="19"/><circle cx="30" cy="30" r="13"/><line x1="30" y1="30" x2="30" y2="21" stroke-linecap="round"/><line x1="30" y1="30" x2="37" y2="31" stroke-linecap="round"/></svg>';
 const $=id=>document.getElementById(id);
 const P=new URLSearchParams(location.search), brand=P.get('brand'), family=P.get('family');
 function card(href,img,title,sub,gold){
@@ -1232,23 +1241,24 @@ DEALS_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
   .filters{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:10px}
   .filters select{background:var(--surface2);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:7px 11px;font-family:inherit;font-size:13px}
   .count{color:var(--muted);font-size:12px;text-align:center;margin-bottom:14px;font-family:'Space Mono',monospace}
-  .dcard{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:12px;cursor:pointer;transition:all .2s;text-decoration:none;display:block}
+  .dcard{display:flex;gap:13px;align-items:stretch;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px;cursor:pointer;transition:all .2s;text-decoration:none;min-height:108px}
   .dcard:hover{border-color:rgba(201,162,39,.5);transform:translateY(-2px)}
-  .drow1{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
-  .dleft{display:flex;align-items:center;gap:11px;min-width:0}
-  .dthumb{width:52px;height:52px;flex:0 0 auto;background:#fff;border-radius:9px;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:4px}
-  .dthumb img{max-width:100%;max-height:100%;object-fit:contain}
+  .dimg{width:100px;flex:0 0 auto;align-self:stretch;background:#fff;border-radius:11px;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:6px}
+  .dimg img{max-width:100%;max-height:100%;object-fit:contain}
+  .dbody{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center}
+  .dside{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:7px;text-align:left}
   .dtitle{font-size:15px;font-weight:600;color:var(--text)}
   .dref{font-family:'Space Mono',monospace;color:var(--gold-soft);font-size:12px;margin-top:2px}
-  .ddisc{flex:0 0 auto;background:rgba(224,98,94,.16);border:1px solid rgba(224,98,94,.45);color:#f5a3a3;font-weight:700;font-size:18px;font-family:'Space Mono',monospace;padding:4px 11px;border-radius:10px;white-space:nowrap}
-  .dprices{margin-top:10px;font-size:13px;font-family:'Space Mono',monospace}
+  .dsize{font-size:12px;color:var(--muted);font-family:'Space Mono',monospace;white-space:nowrap}
+  .ddisc{background:rgba(224,98,94,.16);border:1px solid rgba(224,98,94,.45);color:#f5a3a3;font-weight:700;font-size:17px;font-family:'Space Mono',monospace;padding:4px 11px;border-radius:10px;white-space:nowrap}
+  .dprices{margin-top:8px;font-size:13px;font-family:'Space Mono',monospace}
   .dprices .sold{color:#f5a3a3;font-weight:700}
   .dprices .fair{color:var(--muted)}
-  .dmeta{margin-top:6px;color:var(--muted);font-size:12px;display:flex;flex-wrap:wrap;gap:6px 12px}
+  .dmeta{margin-top:7px;color:var(--muted);font-size:12px;display:flex;flex-wrap:wrap;gap:5px 11px}
   .empty{text-align:center;color:var(--muted);padding:50px 20px;font-size:14px}
   .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:28px;font-family:'Space Mono',monospace}
 </style></head><body>
-<a href="/" class="home-btn">🏠 الرئيسية</a>
+<!--NAV-->
 <div class="wrap">
   <div class="head">
     <div class="mark">CHRONOTRACKER</div>
@@ -1276,7 +1286,7 @@ DEALS_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
 const $=id=>document.getElementById(id);
 const CAP=300;
 let DEALS=[];
-var SKETCH = '<svg viewBox="0 0 60 60" width="40" height="40" aria-hidden="true" fill="none" stroke="#a8a8b0" stroke-width="2"><rect x="25" y="6" width="10" height="11" rx="2"/><rect x="25" y="43" width="10" height="11" rx="2"/><circle cx="30" cy="30" r="19"/><circle cx="30" cy="30" r="13"/><line x1="30" y1="30" x2="30" y2="21" stroke-linecap="round"/><line x1="30" y1="30" x2="37" y2="31" stroke-linecap="round"/></svg>';
+var SKETCH = '<svg viewBox="0 0 60 60" width="40" height="40" aria-hidden="true" fill="none" stroke="#a8a8b0" stroke-width="2" style="width:58px;height:58px"><rect x="25" y="6" width="10" height="11" rx="2"/><rect x="25" y="43" width="10" height="11" rx="2"/><circle cx="30" cy="30" r="19"/><circle cx="30" cy="30" r="13"/><line x1="30" y1="30" x2="30" y2="21" stroke-linecap="round"/><line x1="30" y1="30" x2="37" y2="31" stroke-linecap="round"/></svg>';
 function fmt(n){return Number(n).toLocaleString('en-US');}
 function applyFilters(){
   const brand=$('fBrand').value, cond=$('fCond').value, fs=$('fFs').value;
@@ -1290,18 +1300,20 @@ function applyFilters(){
     : 'لا توجد نتائج بهذه الفلاتر';
   $('list').innerHTML = shown.map(d=>`
     <a class="dcard" href="/?ref=${encodeURIComponent(d.ref)}">
-      <div class="drow1">
-        <div class="dleft">
-          <div class="dthumb">${d.image?`<img src="${d.image}" alt="${d.ref}" onerror="this.parentElement.innerHTML=SKETCH">`:SKETCH}</div>
-          <div><div class="dtitle">${d.brand} ${d.model}</div><div class="dref">${d.ref}</div></div>
+      <div class="dimg">${d.image?`<img src="${d.image}" alt="${d.ref}" onerror="this.parentElement.innerHTML=SKETCH">`:SKETCH}</div>
+      <div class="dbody">
+        <div class="dtitle">${d.brand} ${d.model}</div>
+        <div class="dref">${d.ref}</div>
+        <div class="dprices"><span class="sold">الآن: ${fmt(d.now)}</span> <span class="fair">· سابقاً: ${fmt(d.prev)} KWD</span></div>
+        <div class="dmeta">
+          <span>📊 ${d.count} بيعة آخر 90 يوم</span>
+          <span>${d.cond}</span>
+          <span>${d.fs}</span>
         </div>
-        <div class="ddisc">▼ ${d.drop}%</div>
       </div>
-      <div class="dprices"><span class="sold">الآن: ${fmt(d.now)}</span> <span class="fair">· سابقاً: ${fmt(d.prev)} KWD</span></div>
-      <div class="dmeta">
-        <span>📊 ${d.count} بيعة آخر 90 يوم</span>
-        <span>${d.cond}</span>
-        <span>${d.fs}</span>
+      <div class="dside">
+        <div class="ddisc">▼ ${d.drop}%</div>
+        ${d.size?`<div class="dsize">📏 ${d.size}</div>`:''}
       </div>
     </a>`).join('');
 }
@@ -1337,21 +1349,22 @@ LATEST_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
   .filters{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:10px}
   .filters select{background:var(--surface2);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:7px 11px;font-family:inherit;font-size:13px}
   .count{color:var(--muted);font-size:12px;text-align:center;margin-bottom:14px;font-family:'Space Mono',monospace}
-  .dcard{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:12px;cursor:pointer;transition:all .2s;text-decoration:none;display:block}
+  .dcard{display:flex;gap:13px;align-items:stretch;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px;cursor:pointer;transition:all .2s;text-decoration:none;min-height:108px}
   .dcard:hover{border-color:rgba(201,162,39,.5);transform:translateY(-2px)}
-  .drow1{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
-  .dleft{display:flex;align-items:center;gap:11px;min-width:0}
-  .dthumb{width:52px;height:52px;flex:0 0 auto;background:#fff;border-radius:9px;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:4px}
-  .dthumb img{max-width:100%;max-height:100%;object-fit:contain}
+  .dimg{width:100px;flex:0 0 auto;align-self:stretch;background:#fff;border-radius:11px;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:6px}
+  .dimg img{max-width:100%;max-height:100%;object-fit:contain}
+  .dbody{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center}
+  .dside{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:7px;text-align:left}
   .dtitle{font-size:15px;font-weight:600;color:var(--text)}
   .dref{font-family:'Space Mono',monospace;color:var(--gold-soft);font-size:12px;margin-top:2px}
-  .lprice{flex:0 0 auto;color:var(--gold-soft);font-weight:700;font-size:16px;font-family:'Space Mono',monospace;white-space:nowrap}
+  .dsize{font-size:12px;color:var(--muted);font-family:'Space Mono',monospace;white-space:nowrap}
+  .lprice{color:var(--gold-soft);font-weight:700;font-size:16px;font-family:'Space Mono',monospace;white-space:nowrap}
   .lprice small{font-size:11px;color:var(--muted);font-weight:400}
-  .dmeta{margin-top:8px;color:var(--muted);font-size:12px;display:flex;flex-wrap:wrap;gap:6px 12px}
+  .dmeta{margin-top:7px;color:var(--muted);font-size:12px;display:flex;flex-wrap:wrap;gap:5px 11px}
   .empty{text-align:center;color:var(--muted);padding:50px 20px;font-size:14px}
   .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:28px;font-family:'Space Mono',monospace}
 </style></head><body>
-<a href="/" class="home-btn">🏠 الرئيسية</a>
+<!--NAV-->
 <div class="wrap">
   <div class="head">
     <div class="mark">CHRONOTRACKER</div>
@@ -1379,7 +1392,7 @@ LATEST_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
 const $=id=>document.getElementById(id);
 const CAP=300;
 let LATEST=[];
-var SKETCH = '<svg viewBox="0 0 60 60" width="40" height="40" aria-hidden="true" fill="none" stroke="#a8a8b0" stroke-width="2"><rect x="25" y="6" width="10" height="11" rx="2"/><rect x="25" y="43" width="10" height="11" rx="2"/><circle cx="30" cy="30" r="19"/><circle cx="30" cy="30" r="13"/><line x1="30" y1="30" x2="30" y2="21" stroke-linecap="round"/><line x1="30" y1="30" x2="37" y2="31" stroke-linecap="round"/></svg>';
+var SKETCH = '<svg viewBox="0 0 60 60" width="40" height="40" aria-hidden="true" fill="none" stroke="#a8a8b0" stroke-width="2" style="width:58px;height:58px"><rect x="25" y="6" width="10" height="11" rx="2"/><rect x="25" y="43" width="10" height="11" rx="2"/><circle cx="30" cy="30" r="19"/><circle cx="30" cy="30" r="13"/><line x1="30" y1="30" x2="30" y2="21" stroke-linecap="round"/><line x1="30" y1="30" x2="37" y2="31" stroke-linecap="round"/></svg>';
 function fmt(n){return Number(n).toLocaleString('en-US');}
 function applyFilters(){
   const brand=$('fBrand').value, cond=$('fCond').value, fs=$('fFs').value;
@@ -1393,18 +1406,20 @@ function applyFilters(){
     : 'لا توجد نتائج بهذه الفلاتر';
   $('list').innerHTML = shown.map(d=>`
     <a class="dcard" href="/?ref=${encodeURIComponent(d.ref)}">
-      <div class="drow1">
-        <div class="dleft">
-          <div class="dthumb">${d.image?`<img src="${d.image}" alt="${d.ref}" onerror="this.parentElement.innerHTML=SKETCH">`:SKETCH}</div>
-          <div><div class="dtitle">${d.brand} ${d.model}</div><div class="dref">${d.ref}</div></div>
+      <div class="dimg">${d.image?`<img src="${d.image}" alt="${d.ref}" onerror="this.parentElement.innerHTML=SKETCH">`:SKETCH}</div>
+      <div class="dbody">
+        <div class="dtitle">${d.brand} ${d.model}</div>
+        <div class="dref">${d.ref}</div>
+        <div class="dmeta">
+          <span>📅 ${d.date}</span>
+          ${d.house?`<span>🏛 ${d.house}</span>`:''}
+          <span>${d.cond}</span>
+          <span>${d.fs}</span>
         </div>
-        <div class="lprice">${fmt(d.price)} <small>KWD</small></div>
       </div>
-      <div class="dmeta">
-        <span>📅 ${d.date}</span>
-        ${d.house?`<span>🏛 ${d.house}</span>`:''}
-        <span>${d.cond}</span>
-        <span>${d.fs}</span>
+      <div class="dside">
+        <div class="lprice">${fmt(d.price)} <small>KWD</small></div>
+        ${d.size?`<div class="dsize">📏 ${d.size}</div>`:''}
       </div>
     </a>`).join('');
 }
@@ -1421,6 +1436,26 @@ async function load(){
 }
 load();
 </script></body></html>"""
+
+
+# شريط تنقّل موحّد يظهر بأعلى كل الصفحات (يستبدل <!--NAV-->)
+_NAV_PILL = ("display:inline-flex;align-items:center;gap:6px;padding:7px 14px;"
+             "border-radius:10px;text-decoration:none;font-size:13px;font-weight:600;"
+             "background:rgba(201,162,39,.12);color:#e8c860;border:1px solid rgba(201,162,39,.35)")
+NAV_BAR = (
+    '<nav style="max-width:880px;margin:0 auto 18px;display:flex;flex-wrap:wrap;gap:8px;'
+    'justify-content:center;align-items:center;font-family:\'IBM Plex Sans Arabic\',sans-serif">'
+    '<a href="/" style="display:inline-flex;align-items:center;gap:6px;padding:7px 14px;'
+    'border-radius:10px;text-decoration:none;font-size:13px;font-weight:700;'
+    'background:rgba(201,162,39,.95);color:#0e0e10;border:1px solid transparent">🏠 الرئيسية</a>'
+    f'<a href="/favorites" style="{_NAV_PILL}">⭐ المفضّلة</a>'
+    f'<a href="/deals" style="{_NAV_PILL}">📉 الأكثر نزولاً</a>'
+    f'<a href="/latest" style="{_NAV_PILL}">🆕 أحدث المبيعات</a>'
+    f'<a href="/browse" style="{_NAV_PILL}">🖼️ تصفّح</a>'
+    '</nav>'
+)
+for _pg in ('HTML', 'FAV_HTML', 'BROWSE_HTML', 'DEALS_HTML', 'LATEST_HTML'):
+    globals()[_pg] = globals()[_pg].replace('<!--NAV-->', NAV_BAR)
 
 
 # ========================
