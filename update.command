@@ -51,9 +51,14 @@ echo "▶ تحديث قائمة 'الأكثر نزولاً' (deals.json) ..."
 python3 make_deals.py || echo "  (تخطّينا deals.json — تحقّق لاحقاً)"
 echo ""
 
-# (3) رفع البيانات المحدّثة (الـ CSV + الصور الجديدة + deals.json)
+# نجدّد قائمة "الأكثر سخونة" (hot.json)
+echo "▶ تحديث قائمة 'الأكثر سخونة' (hot.json) ..."
+python3 make_hot.py || echo "  (تخطّينا hot.json — تحقّق لاحقاً)"
+echo ""
+
+# (3) رفع البيانات المحدّثة (الـ CSV + الصور الجديدة + deals.json + hot.json)
 echo "▶ (3/3) رفع البيانات لـ GitHub ..."
-git add chronotracker_complete_v2.csv images/ deals.json
+git add chronotracker_complete_v2.csv images/ deals.json hot.json
 git commit -m "Data update: $(date '+%Y-%m-%d %H:%M')
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"

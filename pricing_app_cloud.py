@@ -43,11 +43,12 @@ LOGOS = {}
 BROWSE_FAMILIES = {}
 BROWSE_REFS = {}
 DEALS = []
+HOT = []
 
 def boot():
     """تحميل المحرك وبناء فهرس البحث. يُستدعى بعد ربط المنفذ مباشرة."""
     global ENGINE, SEARCH_INDEX, _years_by_ref, _REF_INFO, _REF_SIZE, HOTTEST
-    global BROWSE_BRANDS, BROWSE_FAMILIES, BROWSE_REFS, DEALS, LOGOS
+    global BROWSE_BRANDS, BROWSE_FAMILIES, BROWSE_REFS, DEALS, HOT, LOGOS
     print("جاري تحميل المحرك والبيانات ...")
     ENGINE = WatchValuationEngine(csv_path=CSV_PATH, discontinued_csv=DISC_CSV)
 
@@ -161,6 +162,15 @@ def boot():
             _d['size'] = _REF_SIZE.get(_d.get('ref', ''), '')
     except Exception:
         DEALS = []
+
+    # قائمة "الأكثر سخونة" — مُولّدة مسبقاً في hot.json (نشاط البيع/الطلب)
+    try:
+        HOT = json.load(open('hot.json', encoding='utf-8')) if os.path.exists('hot.json') else []
+        for _h in HOT:
+            _h['image'] = image_file_for(_h.get('ref', ''))
+            _h['size'] = _REF_SIZE.get(_h.get('ref', ''), '')
+    except Exception:
+        HOT = []
 
     print(f"✓ جاهز — {len(ENGINE.sold):,} صفقة، {len(SEARCH_INDEX):,} موديل قابل للتسعير")
 
@@ -1460,6 +1470,99 @@ load();
 </script></body></html>"""
 
 
+HOT_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChronoTracker — الأكثر سخونة</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{--bg:#0e0e10;--surface:#19191d;--surface2:#222228;--line:#2e2e36;--gold:#c9a227;--gold-soft:#e8c860;--text:#ececf0;--muted:#8a8a95;--green:#3fb27f}
+  body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans Arabic',sans-serif;min-height:100vh;line-height:1.6;padding:24px 16px}
+  .wrap{max-width:760px;margin:0 auto}
+  .head{text-align:center;margin-bottom:16px;padding-top:16px}
+  .head .mark{font-family:'Space Mono',monospace;color:var(--gold);font-size:13px;letter-spacing:2px}
+  .head h1{font-size:24px;font-weight:700;margin:6px 0}
+  .head p{color:var(--muted);font-size:13px}
+  .filters{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:10px}
+  .filters select{background:var(--surface2);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:7px 11px;font-family:inherit;font-size:13px}
+  .count{color:var(--muted);font-size:12px;text-align:center;margin-bottom:14px;font-family:'Space Mono',monospace}
+  .dcard{display:flex;gap:13px;align-items:stretch;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px;cursor:pointer;transition:all .2s;text-decoration:none;min-height:108px}
+  .dcard:hover{border-color:rgba(240,120,60,.5);transform:translateY(-2px)}
+  .dimg{width:100px;flex:0 0 auto;align-self:stretch;background:#fff;border-radius:11px;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:6px}
+  .dimg img{max-width:100%;max-height:100%;object-fit:contain}
+  .dbody{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center}
+  .dside{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:7px;text-align:left}
+  .dtitle{font-size:15px;font-weight:600;color:var(--text)}
+  .dref{font-family:'Space Mono',monospace;color:var(--gold-soft);font-size:12px;margin-top:2px}
+  .dsize{font-size:12px;color:var(--muted);font-family:'Space Mono',monospace;white-space:nowrap}
+  .hsurge{background:rgba(240,120,60,.16);border:1px solid rgba(240,120,60,.5);color:#ffae7a;font-weight:700;font-size:16px;font-family:'Space Mono',monospace;padding:4px 11px;border-radius:10px;white-space:nowrap}
+  .dprice{margin-top:8px;font-size:13px;font-family:'Space Mono',monospace;color:var(--gold-soft);font-weight:700}
+  .dprice .up{color:#5dcaa5}
+  .dmeta{margin-top:7px;color:var(--muted);font-size:12px;display:flex;flex-wrap:wrap;gap:5px 11px}
+  .dmeta .fire{color:#ffae7a;font-weight:600}
+  .empty{text-align:center;color:var(--muted);padding:50px 20px;font-size:14px}
+  .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:28px;font-family:'Space Mono',monospace}
+</style></head><body>
+<!--NAV-->
+<div class="wrap">
+  <div class="head">
+    <div class="mark">CHRONOTRACKER</div>
+    <h1>🔥 الأكثر سخونة</h1>
+    <p>مراجع ارتفع نشاط بيعها مؤخراً (آخر 30 يوم) مقابل معدّلها المعتاد — والسعر مو نازل</p>
+  </div>
+  <div class="filters">
+    <select id="fBrand"><option value="all">الماركة: الكل</option></select>
+  </div>
+  <div class="count" id="count"></div>
+  <div id="list"></div>
+  <div class="foot">ChronoTracker</div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const CAP=300;
+let HOT=[];
+var SKETCH = '<svg viewBox="0 0 60 60" width="40" height="40" aria-hidden="true" fill="none" stroke="#a8a8b0" stroke-width="2" style="width:58px;height:58px"><rect x="25" y="6" width="10" height="11" rx="2"/><rect x="25" y="43" width="10" height="11" rx="2"/><circle cx="30" cy="30" r="19"/><circle cx="30" cy="30" r="13"/><line x1="30" y1="30" x2="30" y2="21" stroke-linecap="round"/><line x1="30" y1="30" x2="37" y2="31" stroke-linecap="round"/></svg>';
+function fmt(n){return Number(n).toLocaleString('en-US');}
+function applyFilters(){
+  const brand=$('fBrand').value;
+  let ds=HOT;
+  if(brand!=='all') ds=ds.filter(d=>d.brand===brand);
+  const total=ds.length, shown=ds.slice(0,CAP);
+  $('count').textContent = total
+    ? `${fmt(total)} مرجع ساخن` + (total>CAP?` — معروض أعلى ${CAP}`:'')
+    : 'لا توجد نتائج بهذه الفلاتر';
+  $('list').innerHTML = shown.map(d=>`
+    <a class="dcard" href="/?ref=${encodeURIComponent(d.ref)}">
+      <div class="dimg">${d.image?`<img src="${d.image}" alt="${d.ref}" onerror="this.parentElement.innerHTML=SKETCH">`:SKETCH}</div>
+      <div class="dbody">
+        <div class="dtitle">${d.brand} ${d.model}</div>
+        <div class="dref">${d.ref}</div>
+        ${d.price?`<div class="dprice">السعر الحالي: ${fmt(d.price)} KWD${d.price_up?' <span class="up">▲</span>':''}</div>`:''}
+        <div class="dmeta">
+          <span class="fire">🔥 ${d.recent} بيعة آخر شهر · معدّلها ~${d.baseline}</span>
+          ${d.size?`<span>📏 ${d.size}</span>`:''}
+        </div>
+      </div>
+      <div class="dside">
+        <div class="hsurge">🔥 ×${d.surge}</div>
+      </div>
+    </a>`).join('');
+}
+async function load(){
+  try{
+    const r=await fetch('/api/hot'); HOT=await r.json();
+    if(!Array.isArray(HOT)) HOT=[];
+  }catch(e){ HOT=[]; }
+  if(!HOT.length){ $('count').textContent=''; $('list').innerHTML='<div class="empty">لا توجد مراجع ساخنة حالياً.</div>'; return; }
+  const brands=[...new Set(HOT.map(d=>d.brand))].sort();
+  const sel=$('fBrand'); brands.forEach(b=>{const o=document.createElement('option');o.value=b;o.textContent=b;sel.appendChild(o);});
+  $('fBrand').onchange=applyFilters;
+  applyFilters();
+}
+load();
+</script></body></html>"""
+
+
 LATEST_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ChronoTracker — أحدث المبيعات</title>
@@ -1608,11 +1711,12 @@ NAV_BAR = (
     'background:rgba(201,162,39,.95);color:#0e0e10;border:1px solid transparent">🏠 الرئيسية</a>'
     f'<a href="/favorites" style="{_NAV_PILL}">⭐ المفضّلة</a>'
     f'<a href="/deals" style="{_NAV_PILL}">📉 الأكثر نزولاً</a>'
+    f'<a href="/hot" style="{_NAV_PILL}">🔥 الأكثر سخونة</a>'
     f'<a href="/latest" style="{_NAV_PILL}">🆕 أحدث المبيعات</a>'
     f'<a href="/browse" style="{_NAV_PILL}">🖼️ تصفّح</a>'
     '</nav>'
 )
-for _pg in ('HTML', 'FAV_HTML', 'BROWSE_HTML', 'DEALS_HTML', 'LATEST_HTML'):
+for _pg in ('HTML', 'FAV_HTML', 'BROWSE_HTML', 'DEALS_HTML', 'HOT_HTML', 'LATEST_HTML'):
     globals()[_pg] = globals()[_pg].replace('<!--NAV-->', NAV_BAR)
 
 
@@ -1675,6 +1779,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send(200, DEALS_HTML, 'text/html')
         elif path == '/api/deals':
             self._send(200, json.dumps(DEALS, ensure_ascii=False))
+        elif path == '/hot' or path == '/hot.html':
+            self._send(200, HOT_HTML, 'text/html')
+        elif path == '/api/hot':
+            self._send(200, json.dumps(HOT, ensure_ascii=False))
         elif path == '/latest' or path == '/latest.html':
             self._send(200, LATEST_HTML, 'text/html')
         elif path == '/api/latest':
