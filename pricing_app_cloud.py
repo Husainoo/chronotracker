@@ -258,6 +258,29 @@ def latest_sales(limit=500):
     return out
 
 
+def years_table(ref, condition='Pre-owned', full_set=True):
+    """جدول كل السنوات لهالمرجع: لكل سنة عندها بيانات → السعر المقترح + عدد المبيعات
+    + هل تقديري. يستدعي نفس evaluate لكل سنة فالرقم مطابق تماماً للاختيار المفرد."""
+    s = ENGINE.sold
+    comps = s[s['referance'] == ref]
+    if len(comps) == 0:
+        return []
+    want = 'Unworn' if condition == 'Unworn' else 'Pre-owned'
+    years = sorted({int(y) for y in comps['year'].dropna().unique()}, reverse=True)
+    out = []
+    for y in years:
+        try:
+            r = ENGINE.evaluate(reference=ref, year=y, condition=condition, full_set=full_set)
+        except Exception:
+            continue
+        if not r.get('ok'):
+            continue
+        cnt = int(((comps['year'] == y) & (comps['cond2'] == want)).sum())
+        out.append({'year': y, 'fair': r['fair'], 'count': cnt,
+                    'estimated': bool(r.get('estimated'))})
+    return out
+
+
 HTML = r"""<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -499,7 +522,7 @@ const segVal = id => $(id).querySelector('button.on').dataset.v;
 
 function fillYears(years){
   const sel = $('year');
-  sel.innerHTML = '<option value="">— غير محددة —</option>';
+  sel.innerHTML = '<option value="">كل السنوات</option>';
   (years && years.length ? years : []).forEach(y=>{
     const o = document.createElement('option');
     o.value = y; o.textContent = y;
@@ -685,14 +708,29 @@ function wireChart(){
   });
 }
 
+// يحمّل النتيجة حسب curReq: «كل السنوات» → جدول، أو سنة محددة → سعر مفرد
+async function loadResult(){
+  const allYears = (!curReq.year || curReq.year==='all');
+  if(allYears){
+    const q = new URLSearchParams({ref:curReq.ref, cond:curReq.cond, fs:curReq.fs});
+    const [d, rows] = await Promise.all([
+      fetch('/api/evaluate?'+new URLSearchParams({ref:curReq.ref, cond:curReq.cond, fs:curReq.fs, year:''})).then(r=>r.json()),
+      fetch('/api/byyear?'+q).then(r=>r.json())
+    ]);
+    render(d, Array.isArray(rows)?rows:[]);
+  } else {
+    const d = await fetch('/api/evaluate?'+new URLSearchParams(
+      {ref:curReq.ref, cond:curReq.cond, fs:curReq.fs, year:curReq.year})).then(r=>r.json());
+    render(d, null);
+  }
+}
+
 $('go').onclick = async ()=>{
   if(!selectedRef) return;
   $('go').disabled = true; $('go').textContent = 'جارٍ الحساب ...';
-  curReq = {ref:selectedRef, cond:segVal('cond'), fs:segVal('fs'), year:$('year').value};
+  curReq = {ref:selectedRef, cond:segVal('cond'), fs:segVal('fs'), year:($('year').value || 'all')};
   try{
-    const r = await fetch('/api/evaluate?'+new URLSearchParams(curReq));
-    const d = await r.json();
-    render(d);
+    await loadResult();
   }catch(err){
     $('out').innerHTML = '<div class="empty">خطأ: '+err+'</div>';
     $('out').classList.add('show');
@@ -703,23 +741,18 @@ $('go').onclick = async ()=>{
 // إعادة التقييم من القوائم المنسدلة داخل بطاقة النتيجة (نفس الساعة، قيم جديدة)
 async function reEval(){
   if(!curReq.ref) return;
-  const nc=$('reCond').value, nf=$('reFs').value, ny=$('reYear').value;
-  const p=new URLSearchParams({ref:curReq.ref, cond:nc, fs:nf, year:ny});
-  try{
-    const r=await fetch('/api/evaluate?'+p);
-    const d=await r.json();
-    if(!d.ok){ toast(d.msg||'لا توجد بيانات كافية لهذا الخيار'); restoreReSelects(); return; }
-    curReq={ref:curReq.ref, cond:nc, fs:nf, year:ny};
-    render(d);
-  }catch(e){ toast('خطأ في إعادة الحساب'); restoreReSelects(); }
+  curReq = {ref:curReq.ref, cond:$('reCond').value, fs:$('reFs').value, year:$('reYear').value};
+  try{ await loadResult(); }
+  catch(e){ toast('خطأ في إعادة الحساب'); }
 }
-function restoreReSelects(){
-  if($('reCond')) $('reCond').value=curReq.cond;
-  if($('reFs'))   $('reFs').value=curReq.fs;
-  if($('reYear')) $('reYear').value=curReq.year;
+// نقر سنة في جدول «كل السنوات» → ننتقل لعرض تلك السنة المفرد
+function pickYear(ev, y){
+  ev.preventDefault();
+  curReq = {ref:curReq.ref, cond:curReq.cond, fs:curReq.fs, year:String(y)};
+  loadResult();
 }
 
-function render(d){
+function render(d, yearRows){
   const out = $('out');
   const hs=$('hotSec'); if(hs) hs.style.display='none';
   if(!d.ok){ out.innerHTML='<div class="empty">'+(d.msg||'لا توجد بيانات')+'</div>'; out.classList.add('show'); return; }
@@ -871,7 +904,8 @@ function render(d){
   // قوائم منسدلة لإعادة التقييم (السنة + الحالة + الطقم) — تبدأ على قيم البحث الحالية
   const _sst="background:#222228;border:1px solid #2e2e36;border-radius:9px;color:#ececf0;padding:7px 11px;font-family:inherit;font-size:13px;cursor:pointer";
   const _yrs=$('year')?Array.from($('year').options).map(o=>o.value).filter(v=>v):[];
-  const _yopt=`<option value="" ${!curReq.year?'selected':''}>السنة: الكل</option>`+
+  const _allYears = (!curReq.year || curReq.year==='all');
+  const _yopt=`<option value="all" ${_allYears?'selected':''}>كل السنوات</option>`+
     _yrs.map(y=>`<option value="${y}" ${String(y)===String(curReq.year)?'selected':''}>${y}</option>`).join('');
   const reBar=`<div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:0 0 16px">
       <select id="reCond" onchange="reEval()" style="${_sst}">
@@ -901,7 +935,22 @@ function render(d){
       <div style="background:var(--surface2);border-radius:10px;overflow:hidden">${_salesRows||'<div style="padding:12px;text-align:center;color:var(--muted);font-size:13px">لا توجد بيعات مطابقة</div>'}</div>
       <div style="font-size:12px;color:var(--muted);text-align:center;margin-top:11px;line-height:1.7">جرّب تغيير الحالة أو السنة من القوائم أعلاه، أو راجع لاحقاً عند توفّر بيعات أكثر.</div>
     </div>`;
-  const priceSection = d.insufficient ? insuffPanel : `
+  // وضع «كل السنوات»: جدول لكل السنوات بدل السعر المفرد
+  const yearsTable = (Array.isArray(yearRows) && yearRows.length)
+    ? `<div style="max-width:470px;margin:6px auto 0;background:var(--surface2);border:1px solid var(--line);border-radius:13px;overflow:hidden">
+         <div style="display:flex;justify-content:space-between;padding:9px 15px;font-size:11px;color:var(--muted);background:rgba(255,255,255,.03);border-bottom:1px solid var(--line)">
+           <span>السنة</span><span>السعر المقترح</span><span>المبيعات</span>
+         </div>
+         ${yearRows.map(r=>`
+           <a href="#" onclick="pickYear(event,${r.year})" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 15px;border-bottom:1px solid var(--line);text-decoration:none">
+             <span style="font-family:'Space Mono',monospace;font-weight:700;font-size:14px;color:var(--text);min-width:48px">${r.year}</span>
+             <span style="flex:1;text-align:center;font-family:'Space Mono',monospace;font-weight:700;color:var(--gold-soft);font-size:15px">${fmt(r.fair)} <small style="color:var(--muted);font-weight:400">KWD</small>${r.estimated?' <span title="تقديري — لا مبيعات لهذه السنة بنفس الحالة">🔶</span>':''}</span>
+             <span style="color:var(--muted);font-size:12px;min-width:64px;text-align:left">${r.count?fmt(r.count)+' مبيع':'—'}</span>
+           </a>`).join('')}
+       </div>
+       <div style="text-align:center;font-size:11px;color:var(--muted);margin-top:9px;line-height:1.7">🔶 تقديري — مبني على نفس الحالة عبر السنوات (بلا مبيعات لتلك السنة). اضغط أي سنة لتفاصيلها.</div>`
+    : `<div class="empty">لا توجد سنوات ببيانات.</div>`;
+  const priceSection = (Array.isArray(yearRows)) ? yearsTable : (d.insufficient ? insuffPanel : `
     ${discBadge}
     <div class="price-main">
       <div class="lbl">السعر المقترح</div>
@@ -921,7 +970,7 @@ function render(d){
           <div style="font-size:13px;font-weight:700;color:#f5a3a3;font-family:'Space Mono',monospace">فوق ${fmt(d.high)}</div>
         </div>
       </div>
-    </div>`;
+    </div>`);
   out.innerHTML = `
     <div style="display:flex;justify-content:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
       <button onclick="newSearch()" style="display:inline-flex;align-items:center;gap:7px;padding:8px 18px;border-radius:10px;background:var(--surface2);border:1px solid var(--line);color:var(--text);font-family:inherit;font-size:13px;font-weight:600;cursor:pointer">↑ بحث جديد</button>
@@ -1681,6 +1730,16 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(r, ensure_ascii=False, default=str))
             except Exception as e:
                 self._send(200, json.dumps({'ok': False, 'msg': str(e)}, ensure_ascii=False))
+        elif path == '/api/byyear':
+            p = parse_qs(u.query)
+            ref = p.get('ref', [''])[0]
+            cond = p.get('cond', ['Pre-owned'])[0]
+            fs = p.get('fs', ['1'])[0] == '1'
+            try:
+                self._send(200, json.dumps(years_table(ref, cond, fs),
+                                           ensure_ascii=False, default=str))
+            except Exception:
+                self._send(200, json.dumps([], ensure_ascii=False))
         elif path == '/favorites' or path == '/favorites.html':
             self._send(200, FAV_HTML, 'text/html')
         elif path == '/api/favorites':
