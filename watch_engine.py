@@ -97,8 +97,12 @@ class WatchValuationEngine:
             return (s - s.groupby(g).transform('mean')).values
         Y = _demean(logp)
         X = np.column_stack([_demean(yr), _demean(unworn), _demean(full)])
+        if np.linalg.matrix_rank(X) < 3:        # fit متدهور → استخدم المعاملات العامة
+            return None
         b, *_ = np.linalg.lstsq(X, Y, rcond=None)
-        return {'yr': b[0], 'unworn': b[1], 'full': b[2]}
+        # حدّ معامل السنة بنطاق واسع (حماية من معامل شاذ؛ لا يقصّ أي ماركة حالية)
+        return {'yr': float(np.clip(b[0], -1.0, 0.5)),
+                'unworn': float(b[1]), 'full': float(b[2])}
 
     def _coefs(self, brand):
         if brand not in self._coef_cache:
@@ -109,9 +113,15 @@ class WatchValuationEngine:
     @staticmethod
     def _wmedian(vals, w):
         vals = np.asarray(vals, float); w = np.asarray(w, float)
+        if vals.size == 0:
+            return float('nan')
         idx = np.argsort(vals); v = vals[idx]; w = w[idx]
+        total = w.sum()
+        if not np.isfinite(total) or total <= 0:   # انهيار الأوزان → وسيط عادي
+            return float(np.median(v))
         cw = np.cumsum(w)
-        return float(v[np.searchsorted(cw, w.sum() / 2.0)])
+        i = min(int(np.searchsorted(cw, total / 2.0)), len(v) - 1)   # حماية من تجاوز الفهرس
+        return float(v[i])
 
     @staticmethod
     def _conf(n_pool, n_comps):
@@ -189,7 +199,8 @@ class WatchValuationEngine:
 
         # --- تنريمل كل صفقة لنقطة مرجعية واحدة: (ref_year, مستخدمة, partial) ---
         def factor(yr_, unworn_, full_):
-            f = np.exp(c['yr'] * (yr_ - ref_year))
+            d = max(-25.0, min(25.0, yr_ - ref_year))   # حماية من سنوات فاسدة (لا يقصّ مدى البيانات)
+            f = np.exp(c['yr'] * d)
             if unworn_: f *= np.exp(c['unworn'])
             if full_:   f *= np.exp(c['full'])
             return f
