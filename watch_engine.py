@@ -100,7 +100,10 @@ class WatchValuationEngine:
         if np.linalg.matrix_rank(X) < 3:        # fit متدهور → استخدم المعاملات العامة
             return None
         b, *_ = np.linalg.lstsq(X, Y, rcond=None)
-        # حدّ معامل السنة بنطاق واسع (حماية من معامل شاذ؛ لا يقصّ أي ماركة حالية)
+        # معامل سنة متطرّف (fit غير موثوق — يضخّم أسعار السنوات البعيدة) → معاملات عامة
+        if abs(float(b[0])) > 0.15:
+            return None
+        # حدّ معامل السنة بنطاق واسع (حماية إضافية؛ لا يقصّ أي ماركة عادية)
         return {'yr': float(np.clip(b[0], -1.0, 0.5)),
                 'unworn': float(b[1]), 'full': float(b[2])}
 
