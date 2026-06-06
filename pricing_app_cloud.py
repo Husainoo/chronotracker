@@ -9,9 +9,36 @@ APP_PASSWORD، ومتغيّرات البيئة CSV_PATH / IMAGES_PATH / PORT / A
 قائمة سنة منسدلة + أزرار الحالة/Full Set + لوحة نتيجة كاملة + رسم/جداول/مواصفات.
 """
 
-import json, sys, os, hashlib, base64
+import json, sys, os, hashlib, base64, math
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote, unquote
+
+
+def _scrub(o):
+    """يحوّل NaN/Inf → None تكرارياً (يشمل numpy floats) قبل الترميز — يمنع JSON غير صالح.
+    لا يلمس أي قيمة محدودة، فالأرقام الشغّالة تبقى كما هي بالضبط."""
+    if isinstance(o, dict):
+        return {k: _scrub(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_scrub(v) for v in o]
+    if isinstance(o, bool) or o is None or isinstance(o, (str, int)):
+        return o
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    try:                                  # numpy float / أي عددي آخر
+        f = float(o)
+        if not math.isfinite(f):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return o
+
+
+def jdumps(obj, **kw):
+    """json.dumps آمن: ينظّف NaN/Inf أولاً ويمنع رموزها العارية (allow_nan=False)."""
+    kw.setdefault('ensure_ascii', False)
+    kw['allow_nan'] = False
+    return json.dumps(_scrub(obj), **kw)
 
 try:
     import pandas as pd
@@ -1772,24 +1799,24 @@ class RequestHandler(BaseHTTPRequestHandler):
             q = parse_qs(u.query).get('q', [''])[0]
             favset = set(load_favorites())
             results = [dict(m, is_fav=(m['ref'] in favset)) for m in search_models(q)]
-            self._send(200, json.dumps(results, ensure_ascii=False))
+            self._send(200, jdumps(results, ensure_ascii=False))
         elif path == '/api/hottest':
-            self._send(200, json.dumps(HOTTEST, ensure_ascii=False))
+            self._send(200, jdumps(HOTTEST, ensure_ascii=False))
         elif path == '/deals' or path == '/deals.html':
             self._send(200, DEALS_HTML, 'text/html')
         elif path == '/api/deals':
-            self._send(200, json.dumps(DEALS, ensure_ascii=False))
+            self._send(200, jdumps(DEALS, ensure_ascii=False))
         elif path == '/hot' or path == '/hot.html':
             self._send(200, HOT_HTML, 'text/html')
         elif path == '/api/hot':
-            self._send(200, json.dumps(HOT, ensure_ascii=False))
+            self._send(200, jdumps(HOT, ensure_ascii=False))
         elif path == '/latest' or path == '/latest.html':
             self._send(200, LATEST_HTML, 'text/html')
         elif path == '/api/latest':
             try:
-                self._send(200, json.dumps(latest_sales(500), ensure_ascii=False))
+                self._send(200, jdumps(latest_sales(500), ensure_ascii=False))
             except Exception:
-                self._send(200, json.dumps([], ensure_ascii=False))
+                self._send(200, jdumps([], ensure_ascii=False))
         elif path == '/api/pricehistory':
             ref = parse_qs(u.query).get('ref', [''])[0]
             try:
@@ -1804,21 +1831,21 @@ class RequestHandler(BaseHTTPRequestHandler):
                         'cond': ('غير مستخدمة' if str(c).startswith('Unworn') else 'مستخدمة'),
                         'fs': ('Full Set' if str(f).startswith('Full') else 'ناقص')}
                        for dt, p, y, c, f in zip(dates, prices, years, conds, fses) if p and p > 0]
-                self._send(200, json.dumps(out, ensure_ascii=False))
+                self._send(200, jdumps(out, ensure_ascii=False))
             except Exception:
-                self._send(200, json.dumps([], ensure_ascii=False))
+                self._send(200, jdumps([], ensure_ascii=False))
         elif path == '/browse' or path == '/browse.html':
             self._send(200, BROWSE_HTML, 'text/html')
         elif path == '/api/brands':
-            self._send(200, json.dumps(BROWSE_BRANDS, ensure_ascii=False))
+            self._send(200, jdumps(BROWSE_BRANDS, ensure_ascii=False))
         elif path == '/api/families':
             b = parse_qs(u.query).get('brand', [''])[0]
-            self._send(200, json.dumps(BROWSE_FAMILIES.get(b, []), ensure_ascii=False))
+            self._send(200, jdumps(BROWSE_FAMILIES.get(b, []), ensure_ascii=False))
         elif path == '/api/refs':
             q = parse_qs(u.query)
             b = q.get('brand', [''])[0]
             f = q.get('family', [''])[0]
-            self._send(200, json.dumps(BROWSE_REFS.get((b, f), []), ensure_ascii=False))
+            self._send(200, jdumps(BROWSE_REFS.get((b, f), []), ensure_ascii=False))
         elif path == '/api/evaluate':
             p = parse_qs(u.query)
             ref = p.get('ref', [''])[0]
@@ -1835,25 +1862,25 @@ class RequestHandler(BaseHTTPRequestHandler):
                     img = image_file_for(r['reference'])
                     if img:
                         r['image_file'] = img
-                self._send(200, json.dumps(r, ensure_ascii=False, default=str))
+                self._send(200, jdumps(r, ensure_ascii=False, default=str))
             except Exception as e:
-                self._send(200, json.dumps({'ok': False, 'msg': str(e)}, ensure_ascii=False))
+                self._send(200, jdumps({'ok': False, 'msg': str(e)}, ensure_ascii=False))
         elif path == '/api/byyear':
             p = parse_qs(u.query)
             ref = p.get('ref', [''])[0]
             cond = p.get('cond', ['Pre-owned'])[0]
             fs = p.get('fs', ['1'])[0] == '1'
             try:
-                self._send(200, json.dumps(years_table(ref, cond, fs),
+                self._send(200, jdumps(years_table(ref, cond, fs),
                                            ensure_ascii=False, default=str))
             except Exception:
-                self._send(200, json.dumps([], ensure_ascii=False))
+                self._send(200, jdumps([], ensure_ascii=False))
         elif path == '/favorites' or path == '/favorites.html':
             self._send(200, FAV_HTML, 'text/html')
         elif path == '/api/favorites':
-            self._send(200, json.dumps(fav_list_detailed(), ensure_ascii=False))
+            self._send(200, jdumps(fav_list_detailed(), ensure_ascii=False))
         else:
-            self._send(404, json.dumps({'error': 'not found'}))
+            self._send(404, jdumps({'error': 'not found'}))
 
     def do_POST(self):
         u = urlparse(self.path)
@@ -1874,7 +1901,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         # حماية باقي مسارات POST
         if not self._is_authed():
-            self._send(401, json.dumps({'error': 'unauthorized'}))
+            self._send(401, jdumps({'error': 'unauthorized'}))
             return
 
         if path == '/api/fav':
@@ -1891,10 +1918,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             elif action == 'remove' and ref in favs:
                 favs.remove(ref)
                 save_favorites(favs)
-            self._send(200, json.dumps({'ok': True, 'count': len(favs),
+            self._send(200, jdumps({'ok': True, 'count': len(favs),
                                         'is_fav': ref in favs}, ensure_ascii=False))
         else:
-            self._send(404, json.dumps({'error': 'not found'}))
+            self._send(404, jdumps({'error': 'not found'}))
 
     def _serve_image(self, path):
         fname = unquote(path[len('/images/'):])

@@ -25,7 +25,7 @@ ChronoTracker — التحديث السريع عبر صفحة المزادات (
 """
 
 import csv, json, time, os, sys, shutil, random
-from datetime import datetime
+from datetime import datetime, timedelta
 import urllib.request, urllib.error, urllib.parse
 
 # ---------------------------------------------------------------------------
@@ -42,9 +42,10 @@ BY_AUC       = "https://api.chronotracker.com/api/Watch/GetWatchByAuction"
 FAMILIES_URL = "https://api.chronotracker.com/api/Discover/GetDiscoverBrandFamilies?BrandId=1"
 RESULTS_URL  = "https://api.chronotracker.com/api/v2/DiscoverV2/GetResults"
 
-# كم صفحة متتالية بدون رولكس جديد قبل التوقف (أمان ضد التوقف المبكر)
-STOP_AFTER_EMPTY_PAGES = 3
-MAX_PAGES = 200
+# التوقف: سلسلة من صفحات متتالية بدون رولكس جديد (وصلنا المعروف) — مو أول معروف
+STOP_KNOWN_PAGES = 4       # نفس قيمة محدّث غير-روليكس
+SAFETY_DAYS      = 120     # حد أمان: لو ما لقينا معروفين، لا نمسح أقدم من هذا
+MAX_PAGES        = 400
 
 # السلوك البشري
 DELAY_MIN = 2.0
@@ -121,6 +122,15 @@ def auctions_page(page, headers):
     """يرجّع قائمة الساعات في صفحة المزادات."""
     d = inner(get_json(f"{GET_AUCTIONS}?pageNum={page}", headers))
     return d if isinstance(d, list) else []
+
+def parse_date(s):
+    """يحوّل '2026-06-03T00:00:00' لـ datetime؛ يرجّع None لو فشل."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(str(s)[:19])
+    except Exception:
+        return None
 
 def fetch_full(auction_id, watch_id, awid, headers):
     """يجيب التفاصيل الكاملة (29 عمود) لساعة معينة."""
@@ -281,10 +291,11 @@ def main():
         print(f"↻ استكمال جلب التفاصيل: {len(done_awids)}/{len(to_fetch)} منجز.")
         log_mode = "a"
     else:
-        print("\n▶ المرحلة 1: مسح صفحة المزادات لاكتشاف رولكس الجديد ...")
+        print("\n▶ المرحلة 1: مسح المزادات (الأحدث-أولاً) حتى نوصل رولكس المعروف ...")
         to_fetch = []          # [(auctionId, watchId, awid, title)]
         seen_new = set()
-        empty_streak = 0
+        known_streak = 0
+        safety_cut = datetime.now() - timedelta(days=SAFETY_DAYS)   # أرضية أمان
         page = 1
         while page <= MAX_PAGES:
             try:
@@ -294,25 +305,35 @@ def main():
                 sys.exit("⛔ التوكن منتهي. جدّده من Proxyman، حدّث token.txt، وأعد التشغيل.")
             if not items:
                 break
-            page_new = 0
+            page_new, page_max = 0, None
             for it in items:
+                dt = parse_date(it.get("date"))
+                if dt and (page_max is None or dt > page_max):
+                    page_max = dt
                 brand = str(it.get("brand", "")).strip()
                 awid = str(it.get("auctionWatchId", "")).strip()
                 if brand != "Rolex":
                     continue                       # مو رولكس → طوّفها
                 if awid in have_awid or awid in seen_new:
-                    continue                       # موجود عندنا → تخطّاه
+                    continue                       # موجود عندنا → معروف
                 seen_new.add(awid)
                 to_fetch.append((it.get("auctionId"), it.get("id"),
                                  it.get("auctionWatchId"),
                                  str(it.get("title", ""))[:50]))
                 page_new += 1
-            print(f"  صفحة {page}: {len(items)} ساعة، {page_new} رولكس جديد")
-            empty_streak = 0 if page_new > 0 else empty_streak + 1
-            if empty_streak >= STOP_AFTER_EMPTY_PAGES:
-                print(f"  ⏹ توقف: {STOP_AFTER_EMPTY_PAGES} صفحات متتالية بدون رولكس جديد.")
-                break
+            md = page_max.date() if page_max else "?"
+            print(f"  صفحة {page}: {len(items)} ساعة (أحدث {md})، {page_new} رولكس جديد")
+            # سلسلة المعروفة: صفحة بلا أي رولكس جديد تزيدها؛ أي جديد يصفّرها (مو أول معروف)
+            known_streak = (known_streak + 1) if page_new == 0 else 0
             page += 1
+            if known_streak >= STOP_KNOWN_PAGES:
+                print(f"  ⏹ توقف: {STOP_KNOWN_PAGES} صفحات متتالية بلا رولكس جديد "
+                      f"(وصلنا المعروف).")
+                break
+            # حد أمان: لو ما لقينا معروفين والصفحة تجاوزت SAFETY_DAYS — لا نشرد للأقدم
+            if page_max and page_max < safety_cut:
+                print(f"  ⏹ توقف (حد أمان): تجاوزنا {SAFETY_DAYS} يوم بلا سلسلة معروفة.")
+                break
             human_delay()
 
         print(f"\n✓ اكتُشف {len(to_fetch)} ساعة رولكس جديدة.")

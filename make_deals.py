@@ -27,6 +27,11 @@ def main():
     e = WatchValuationEngine()
     sold = e.sold
     rd = e.ref_date
+    gap = (pd.Timestamp.now() - rd).days
+    print(f"أحدث تاريخ بالبيانات (ref_date): {rd.date()} — قبل {gap} يوم من اليوم")
+    if gap > 14:
+        print(f"⚠️  تحذير: البيانات قديمة ({gap} يوم)! القائمة محسوبة على نافذة "
+              f"زمنية متجمّدة — حدّث البيانات أولاً لنتائج دقيقة.")
 
     cut_cur = rd - pd.Timedelta(days=CUR_DAYS)
     cut_prior = rd - pd.Timedelta(days=PRIOR_DAYS)

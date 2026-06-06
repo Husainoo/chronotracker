@@ -33,6 +33,11 @@ def main():
     e = WatchValuationEngine()
     sold = e.sold
     rd = e.ref_date
+    gap = (pd.Timestamp.now() - rd).days
+    print(f"أحدث تاريخ بالبيانات (ref_date): {rd.date()} — قبل {gap} يوم من اليوم")
+    if gap > 14:
+        print(f"⚠️  تحذير: البيانات قديمة ({gap} يوم)! القائمة محسوبة على نافذة "
+              f"زمنية متجمّدة — حدّث البيانات أولاً لنتائج دقيقة.")
 
     cut_recent = rd - pd.Timedelta(days=RECENT_DAYS)
     cut_base = rd - pd.Timedelta(days=RECENT_DAYS + BASE_DAYS)
@@ -64,10 +69,13 @@ def main():
         if surge < MIN_SURGE:
             continue
         now_p, prev_p = pnow.get(ref), pprev.get(ref)
-        if pd.notna(now_p) and pd.notna(prev_p) and prev_p > 0 and now_p < prev_p * PRICE_TOL:
+        # لا نعدّه سخونة إلا لو السعر الحالي والسابق كلاهما معروف (وإلا الاتجاه مجهول)
+        if not (pd.notna(now_p) and pd.notna(prev_p) and prev_p > 0):
+            continue
+        if now_p < prev_p * PRICE_TOL:
             continue                              # السعر نازل → استبعد (تصفية)
-        price_up = bool(pd.notna(now_p) and pd.notna(prev_p) and now_p > prev_p * 1.02)
-        cur_price = int(round(now_p)) if pd.notna(now_p) else None
+        price_up = bool(now_p > prev_p * 1.02)
+        cur_price = int(round(now_p))
         bm = info.loc[ref]
         hot.append({
             'ref': str(ref), 'brand': str(bm['brand']), 'model': str(bm['model']).strip(),
