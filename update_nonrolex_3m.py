@@ -38,7 +38,7 @@ GET_AUCTIONS = "https://api.chronotracker.com/api/Auctions/GetAuctions"
 BY_AUC       = "https://api.chronotracker.com/api/Watch/GetWatchByAuction"
 
 # تحديث تزايدي: نمسح الأحدث-أولاً ونوقف لما نوصل المزادات المعروفة (الموجودة بالـ CSV)
-STOP_KNOWN_PAGES = 2       # نوقف بعد كم صفحة متتالية بلا أي غير-Rolex جديد (سلسلة، مو أول معروف)
+STOP_KNOWN_PAGES = 4       # نوقف بعد كم صفحة متتالية بلا أي غير-Rolex جديد (سلسلة، مو أول معروف)
 SAFETY_DAYS      = 120     # حد أمان: لو ما لقينا معروفين، لا نمسح أقدم من هذا
 MAX_PAGES        = 400     # سقف أمان للصفحات
 
