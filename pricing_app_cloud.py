@@ -72,11 +72,12 @@ BROWSE_REFS = {}
 DEALS = []
 HOT = []
 BUDGET = []
+MARKET = {}
 
 def boot():
     """تحميل المحرك وبناء فهرس البحث. يُستدعى بعد ربط المنفذ مباشرة."""
     global ENGINE, SEARCH_INDEX, _years_by_ref, _REF_INFO, _REF_SIZE, HOTTEST
-    global BROWSE_BRANDS, BROWSE_FAMILIES, BROWSE_REFS, DEALS, HOT, BUDGET, LOGOS
+    global BROWSE_BRANDS, BROWSE_FAMILIES, BROWSE_REFS, DEALS, HOT, BUDGET, MARKET, LOGOS
     print("جاري تحميل المحرك والبيانات ...")
     ENGINE = WatchValuationEngine(csv_path=CSV_PATH, discontinued_csv=DISC_CSV)
 
@@ -224,6 +225,12 @@ def boot():
         BUDGET = build_budget_index()
     except Exception:
         BUDGET = []
+
+    # نظرة "وضع السوق" — محسوبة بالذاكرة (مستوى/نشاط/نسبة بيع عبر آخر 12 باكت)
+    try:
+        MARKET = build_market_overview()
+    except Exception:
+        MARKET = {}
 
     print(f"✓ جاهز — {len(ENGINE.sold):,} صفقة، {len(SEARCH_INDEX):,} موديل قابل للتسعير")
 
@@ -380,6 +387,81 @@ def build_budget_index():
         })
     out.sort(key=lambda x: x['price'], reverse=True)
     return out
+
+
+def build_market_overview(bucket_days=14, n_buckets=12):
+    """نظرة السوق: لكل باكت (كل أسبوعين، 12 باكت ≈ 6 أشهر):
+      • المستوى = وسيط (سعر البيع ÷ القيمة الطبيعية للمرجع) — للمراجع الموثوقة (≥3 مبيعات).
+        يقيس هل الساعات تنباع فوق/تحت قيمتها (مو متوسط خام، فما يتأثر بنوعية المباع).
+      • النشاط = عدد المبيعات بالباكت.
+      • نسبة البيع = المباع ÷ (المباع + غير المباع) حسب تاريخ الإدراج.
+    العنوان = آخر باكت مقابل متوسط الـ4 قبله. الحكم يرجّح المستوى ونسبة البيع (مستقرّان)
+    على النشاط (متذبذب/حسّاس لحداثة الاستيراد)."""
+    s = ENGINE.sold
+    ns = ENGINE.notsold
+    rd = ENGINE.ref_date
+    vc = s['referance'].value_counts()
+    rel = vc[vc >= 3].index                     # مراجع موثوقة
+    natural = s[s['referance'].isin(rel)].groupby('referance', observed=True)['soldPrice'].median()
+    srel = s[s['referance'].isin(rel)].copy()
+    srel['ratio'] = srel['soldPrice'] / srel['referance'].map(natural)
+
+    buckets = []
+    for i in range(n_buckets):
+        hi = rd - pd.Timedelta(days=bucket_days * i)
+        lo = rd - pd.Timedelta(days=bucket_days * (i + 1))
+        bs = srel[(srel['priceDate'] > lo) & (srel['priceDate'] <= hi)]
+        level = float(bs['ratio'].median()) if len(bs) >= 10 else None
+        act = int(len(s[(s['priceDate'] > lo) & (s['priceDate'] <= hi)]))
+        nun = int(len(ns[(ns['priceDate'] > lo) & (ns['priceDate'] <= hi)]))
+        sell = round(act / (act + nun) * 100) if (act + nun) > 0 else None
+        buckets.append({'end': hi.date().isoformat(),
+                        'level': round(level, 3) if level is not None else None,
+                        'activity': act, 'sell': sell})
+    buckets = buckets[::-1]                      # الأقدم → الأحدث
+
+    last = buckets[-1]
+    prev4 = buckets[-5:-1]
+
+    def _avg(k):
+        vals = [b[k] for b in prev4 if b[k] is not None]
+        return sum(vals) / len(vals) if vals else None
+
+    lv_now, lv_p = last['level'], _avg('level')
+    ac_now, ac_p = last['activity'], _avg('activity')
+    se_now, se_p = last['sell'], _avg('sell')
+    lv_chg = round((lv_now / lv_p - 1) * 100, 1) if (lv_now and lv_p) else None
+    ac_chg = round((ac_now / ac_p - 1) * 100) if (ac_now and ac_p) else None
+    se_chg = round(se_now - se_p) if (se_now is not None and se_p is not None) else None
+
+    # الحكم: المستوى أهم (×2) + نسبة البيع، والنشاط ثانوي بعتبة أعلى (لتذبذبه)
+    score = 0
+    if lv_chg is not None:
+        score += 2 if lv_chg > 1.5 else -2 if lv_chg < -1.5 else 0
+    if se_chg is not None:
+        score += 1 if se_chg > 3 else -1 if se_chg < -3 else 0
+    if ac_chg is not None:
+        score += 1 if ac_chg > 15 else -1 if ac_chg < -15 else 0
+    if score >= 2:
+        verdict = {'label': 'السوق حار', 'emoji': '🔥',
+                   'note': 'الأسعار تميل فوق القيمة الطبيعية ونسبة البيع/النشاط صاعدة — طلب قوي.'}
+    elif score <= -2:
+        verdict = {'label': 'السوق بارد', 'emoji': '❄️',
+                   'note': 'الأسعار تحت القيمة الطبيعية والبيع/النشاط هابط — عرض زائد، فرصة للصبور.'}
+    else:
+        verdict = {'label': 'السوق مستقر', 'emoji': '⚖️',
+                   'note': 'الأسعار قرب القيمة الطبيعية ونسبة البيع مستقرة — سوق متوازن.'}
+
+    return {
+        'bucket_days': bucket_days, 'bucket_label': 'كل أسبوعين',
+        'buckets': buckets,
+        'header': {
+            'level': {'now': lv_now, 'prev4': round(lv_p, 3) if lv_p else None, 'chg': lv_chg},
+            'activity': {'now': ac_now, 'prev4': round(ac_p) if ac_p else None, 'chg': ac_chg},
+            'sell': {'now': se_now, 'prev4': round(se_p) if se_p is not None else None, 'chg': se_chg},
+        },
+        'verdict': verdict,
+    }
 
 
 HTML = r"""<!DOCTYPE html>
@@ -1772,6 +1854,105 @@ load();
 </script></body></html>"""
 
 
+MARKET_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChronoTracker — وضع السوق</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{--bg:#0e0e10;--surface:#19191d;--surface2:#222228;--line:#2e2e36;--gold:#c9a227;--gold-soft:#e8c860;--text:#ececf0;--muted:#8a8a95;--green:#5dcaa5;--red:#f5a3a3}
+  body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans Arabic',sans-serif;min-height:100vh;line-height:1.6;padding:24px 16px}
+  .wrap{max-width:680px;margin:0 auto}
+  .head{text-align:center;margin-bottom:16px;padding-top:16px}
+  .head .mark{font-family:'Space Mono',monospace;color:var(--gold);font-size:13px;letter-spacing:2px}
+  .head h1{font-size:24px;font-weight:700;margin:6px 0}
+  .head p{color:var(--muted);font-size:13px}
+  .verdict{border-radius:16px;padding:20px 18px;text-align:center;margin-bottom:18px;border:1px solid}
+  .verdict .emoji{font-size:38px}
+  .verdict .vlabel{font-size:22px;font-weight:700;margin-top:4px}
+  .verdict .vnote{font-size:13px;color:var(--muted);margin-top:8px;line-height:1.7}
+  .verdict.hot{background:rgba(226,75,74,.12);border-color:rgba(226,75,74,.45)}
+  .verdict.hot .vlabel{color:#f5a3a3}
+  .verdict.cold{background:rgba(85,150,230,.12);border-color:rgba(85,150,230,.45)}
+  .verdict.cold .vlabel{color:#9ec7f0}
+  .verdict.stable{background:rgba(201,162,39,.12);border-color:rgba(201,162,39,.45)}
+  .verdict.stable .vlabel{color:#ecc964}
+  .subhint{text-align:center;color:var(--muted);font-size:12px;margin-bottom:12px;font-family:'Space Mono',monospace}
+  .mcard{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:15px 16px;margin-bottom:12px}
+  .mtop{display:flex;justify-content:space-between;align-items:center;gap:10px}
+  .mttl{font-size:14px;font-weight:600;color:var(--text)}
+  .mhelp{font-size:11px;color:var(--muted)}
+  .mval{font-size:26px;font-weight:700;font-family:'Space Mono',monospace;margin-top:6px}
+  .msub{font-size:12px;color:var(--muted);margin-top:1px}
+  .mspark{margin-top:10px}
+  .dlt{font-size:13px;font-weight:700;font-family:'Space Mono',monospace;white-space:nowrap}
+  .dlt.up{color:var(--green)}.dlt.down{color:var(--red)}.dlt.flat{color:var(--muted)}
+  .empty{text-align:center;color:var(--muted);padding:50px 20px;font-size:14px}
+  .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:28px;font-family:'Space Mono',monospace}
+</style></head><body>
+<!--NAV-->
+<div class="wrap">
+  <div class="head">
+    <div class="mark">CHRONOTRACKER</div>
+    <h1>📊 وضع السوق</h1>
+    <p>اتجاه السوق كل أسبوعين عبر آخر ~6 أشهر — من المراجع الموثوقة (≥3 مبيعات)</p>
+  </div>
+  <div id="body"></div>
+  <div class="foot">ChronoTracker</div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+function fmt(n){return Number(n).toLocaleString('en-US');}
+function spark(vals,color){
+  const v=vals.filter(x=>x!=null); if(v.length<2) return '';
+  const W=300,H=46,p=5, mn=Math.min(...v),mx=Math.max(...v),rng=(mx-mn)||1;
+  const xy=i=>[p+(W-2*p)*i/(v.length-1), H-p-(H-2*p)*(v[i]-mn)/rng];
+  const pts=v.map((_,i)=>xy(i).map(n=>n.toFixed(1)).join(',')).join(' ');
+  const [lx,ly]=xy(v.length-1);
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none">
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="3" fill="${color}"/></svg>`;
+}
+function dlt(chg,unit){
+  if(chg==null) return '';
+  const cls=chg>0?'up':chg<0?'down':'flat', a=chg>0?'▲':chg<0?'▼':'▬';
+  return `<span class="dlt ${cls}">${a} ${Math.abs(chg)}${unit}</span>`;
+}
+function card(ttl,help,valHtml,sub,deltaHtml,vals,color){
+  return `<div class="mcard">
+    <div class="mtop"><div><div class="mttl">${ttl}</div><div class="mhelp">${help}</div></div>${deltaHtml}</div>
+    <div class="mval">${valHtml}</div><div class="msub">${sub}</div>
+    <div class="mspark">${spark(vals,color)}</div></div>`;
+}
+async function load(){
+  let m; try{ m=await (await fetch('/api/market')).json(); }catch(e){ m=null; }
+  if(!m || !m.buckets || !m.buckets.length){ $('body').innerHTML='<div class="empty">تعذّر حساب وضع السوق حالياً.</div>'; return; }
+  const v=m.verdict, h=m.header, B=m.buckets;
+  const vcls=v.label.includes('حار')?'hot':v.label.includes('بارد')?'cold':'stable';
+  // مستوى: نسبة فوق/تحت الطبيعي
+  const lvNow=h.level.now, lvPct=lvNow!=null?Math.round((lvNow-1)*1000)/10:null;
+  const lvSub = lvPct==null?'—':(lvPct>0.3?'فوق القيمة الطبيعية':lvPct<-0.3?'تحت القيمة الطبيعية':'عند القيمة الطبيعية');
+  const lvColor = lvPct>0.3?'#5dcaa5':lvPct<-0.3?'#f5a3a3':'#ecc964';
+  $('body').innerHTML = `
+    <div class="verdict ${vcls}">
+      <div class="emoji">${v.emoji}</div><div class="vlabel">${v.label}</div>
+      <div class="vnote">${v.note}</div>
+    </div>
+    <div class="subhint">آخر باكت مقابل متوسط الـ4 باكتات قبله</div>
+    ${card('📐 مستوى السوق','سعر البيع ÷ القيمة الطبيعية (وسيط)',
+       (lvPct>0?'+':'')+lvPct+'%', lvSub, dlt(h.level.chg,'%'),
+       B.map(b=>b.level), lvColor)}
+    ${card('📊 النشاط','عدد المبيعات بالباكت',
+       fmt(h.activity.now)+' <small style="font-size:13px;color:var(--muted)">مبيع</small>', 'كل أسبوعين',
+       dlt(h.activity.chg,'%'), B.map(b=>b.activity), '#e8c860')}
+    ${card('🔁 نسبة البيع','المباع ÷ المعروض',
+       h.sell.now+'%', 'من المعروض انباع', dlt(h.sell.chg,'pt'),
+       B.map(b=>b.sell), '#9ec7f0')}`;
+}
+load();
+</script></body></html>"""
+
+
 LATEST_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ChronoTracker — أحدث المبيعات</title>
@@ -1922,11 +2103,13 @@ NAV_BAR = (
     f'<a href="/deals" style="{_NAV_PILL}">📉 الأكثر نزولاً</a>'
     f'<a href="/hot" style="{_NAV_PILL}">🔥 الأكثر سخونة</a>'
     f'<a href="/budget" style="{_NAV_PILL}">🛒 ضمن ميزانيتي</a>'
+    f'<a href="/market" style="{_NAV_PILL}">📊 وضع السوق</a>'
     f'<a href="/latest" style="{_NAV_PILL}">🆕 أحدث المبيعات</a>'
     f'<a href="/browse" style="{_NAV_PILL}">🖼️ تصفّح</a>'
     '</nav>'
 )
-for _pg in ('HTML', 'FAV_HTML', 'BROWSE_HTML', 'DEALS_HTML', 'HOT_HTML', 'BUDGET_HTML', 'LATEST_HTML'):
+for _pg in ('HTML', 'FAV_HTML', 'BROWSE_HTML', 'DEALS_HTML', 'HOT_HTML', 'BUDGET_HTML',
+            'MARKET_HTML', 'LATEST_HTML'):
     globals()[_pg] = globals()[_pg].replace('<!--NAV-->', NAV_BAR)
 
 
@@ -1997,6 +2180,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send(200, BUDGET_HTML, 'text/html')
         elif path == '/api/budget':
             self._send(200, jdumps(BUDGET, ensure_ascii=False))
+        elif path == '/market' or path == '/market.html':
+            self._send(200, MARKET_HTML, 'text/html')
+        elif path == '/api/market':
+            self._send(200, jdumps(MARKET, ensure_ascii=False))
         elif path == '/latest' or path == '/latest.html':
             self._send(200, LATEST_HTML, 'text/html')
         elif path == '/api/latest':
