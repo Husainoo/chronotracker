@@ -226,7 +226,7 @@ def boot():
     except Exception:
         BUDGET = []
 
-    # نظرة "وضع السوق" — محسوبة بالذاكرة (مستوى/نشاط/نسبة بيع عبر آخر 12 باكت)
+    # نظرة "وضع السوق" — محسوبة بالذاكرة (مستوى/نشاط/نسبة بيع شهرياً، آخر 12 شهر)
     try:
         MARKET = build_market_overview()
     except Exception:
@@ -389,14 +389,14 @@ def build_budget_index():
     return out
 
 
-def build_market_overview(bucket_days=14, n_buckets=12):
-    """نظرة السوق: لكل باكت (كل أسبوعين، 12 باكت ≈ 6 أشهر):
+def build_market_overview(n_months=12):
+    """نظرة السوق شهرياً (أشهر تقويمية، آخر 12 شهر):
       • المستوى = وسيط (سعر البيع ÷ القيمة الطبيعية للمرجع) — للمراجع الموثوقة (≥3 مبيعات).
         يقيس هل الساعات تنباع فوق/تحت قيمتها (مو متوسط خام، فما يتأثر بنوعية المباع).
-      • النشاط = عدد المبيعات بالباكت.
+      • النشاط = عدد المبيعات بالشهر.
       • نسبة البيع = المباع ÷ (المباع + غير المباع) حسب تاريخ الإدراج.
-    العنوان = آخر باكت مقابل متوسط الـ4 قبله. الحكم يرجّح المستوى ونسبة البيع (مستقرّان)
-    على النشاط (متذبذب/حسّاس لحداثة الاستيراد)."""
+    الشهر الجاري (شهر ref_date) مُعلَّم current=True (لسه ما خلص) ويُستثنى من الحكم.
+    الحكم = آخر شهر مكتمل مقابل متوسط الأشهر السابقة."""
     s = ENGINE.sold
     ns = ENGINE.notsold
     rd = ENGINE.ref_date
@@ -405,27 +405,34 @@ def build_market_overview(bucket_days=14, n_buckets=12):
     natural = s[s['referance'].isin(rel)].groupby('referance', observed=True)['soldPrice'].median()
     srel = s[s['referance'].isin(rel)].copy()
     srel['ratio'] = srel['soldPrice'] / srel['referance'].map(natural)
+    srel['ym'] = srel['priceDate'].dt.to_period('M')
+    s_ym = s['priceDate'].dt.to_period('M')
+    ns_ym = ns['priceDate'].dt.to_period('M')
+    cur = rd.to_period('M')
+    periods = [cur - i for i in range(n_months)][::-1]   # الأقدم → الأحدث (آخره الشهر الجاري)
 
-    buckets = []
-    for i in range(n_buckets):
-        hi = rd - pd.Timedelta(days=bucket_days * i)
-        lo = rd - pd.Timedelta(days=bucket_days * (i + 1))
-        bs = srel[(srel['priceDate'] > lo) & (srel['priceDate'] <= hi)]
+    months = []
+    for p in periods:
+        bs = srel[srel['ym'] == p]
         level = float(bs['ratio'].median()) if len(bs) >= 10 else None
-        act = int(len(s[(s['priceDate'] > lo) & (s['priceDate'] <= hi)]))
-        nun = int(len(ns[(ns['priceDate'] > lo) & (ns['priceDate'] <= hi)]))
+        act = int((s_ym == p).sum())
+        nun = int((ns_ym == p).sum())
         sell = round(act / (act + nun) * 100) if (act + nun) > 0 else None
-        buckets.append({'end': hi.date().isoformat(),
-                        'level': round(level, 3) if level is not None else None,
-                        'activity': act, 'sell': sell})
-    buckets = buckets[::-1]                      # الأقدم → الأحدث
+        months.append({'month': str(p), 'label': str(p),
+                       'level': round(level, 3) if level is not None else None,
+                       'activity': act, 'sell': sell,
+                       'current': bool(p == cur)})
 
-    last = buckets[-1]
-    prev4 = buckets[-5:-1]
+    complete = [m for m in months if not m['current']]
+    last = complete[-1] if complete else None
+    prev = complete[-5:-1]                       # 4 أشهر مكتملة قبل آخر شهر مكتمل
 
     def _avg(k):
-        vals = [b[k] for b in prev4 if b[k] is not None]
+        vals = [m[k] for m in prev if m[k] is not None]
         return sum(vals) / len(vals) if vals else None
+
+    if last is None:
+        return {'months': months, 'header': {}, 'verdict': {}, 'last_month': None}
 
     lv_now, lv_p = last['level'], _avg('level')
     ac_now, ac_p = last['activity'], _avg('activity')
@@ -434,7 +441,7 @@ def build_market_overview(bucket_days=14, n_buckets=12):
     ac_chg = round((ac_now / ac_p - 1) * 100) if (ac_now and ac_p) else None
     se_chg = round(se_now - se_p) if (se_now is not None and se_p is not None) else None
 
-    # الحكم: المستوى أهم (×2) + نسبة البيع، والنشاط ثانوي بعتبة أعلى (لتذبذبه)
+    # الحكم (نفس منطق التسجيل، لكن على الشهر المكتمل): المستوى أهم (×2) + نسبة البيع + النشاط
     score = 0
     if lv_chg is not None:
         score += 2 if lv_chg > 1.5 else -2 if lv_chg < -1.5 else 0
@@ -453,12 +460,12 @@ def build_market_overview(bucket_days=14, n_buckets=12):
                    'note': 'الأسعار قرب القيمة الطبيعية ونسبة البيع مستقرة — سوق متوازن.'}
 
     return {
-        'bucket_days': bucket_days, 'bucket_label': 'كل أسبوعين',
-        'buckets': buckets,
+        'months': months,
+        'last_month': last['label'],
         'header': {
-            'level': {'now': lv_now, 'prev4': round(lv_p, 3) if lv_p else None, 'chg': lv_chg},
-            'activity': {'now': ac_now, 'prev4': round(ac_p) if ac_p else None, 'chg': ac_chg},
-            'sell': {'now': se_now, 'prev4': round(se_p) if se_p is not None else None, 'chg': se_chg},
+            'level': {'now': lv_now, 'prev': round(lv_p, 3) if lv_p else None, 'chg': lv_chg},
+            'activity': {'now': ac_now, 'prev': round(ac_p) if ac_p else None, 'chg': ac_chg},
+            'sell': {'now': se_now, 'prev': round(se_p) if se_p is not None else None, 'chg': se_chg},
         },
         'verdict': verdict,
     }
@@ -1889,7 +1896,7 @@ MARKET_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
   .mexp b{color:var(--text);font-weight:600;opacity:.85}
   .mex{font-size:11px;color:var(--muted);opacity:.72;margin-top:2px;line-height:1.65}
   .mex b{font-weight:600}
-  .mwarn{margin-top:11px;padding:9px 12px;border-radius:9px;background:rgba(201,162,39,.13);border:1px solid rgba(201,162,39,.5);color:#e8c860;font-size:11.5px;line-height:1.75}
+  .mcur{font-size:11px;color:var(--muted);opacity:.65;margin-top:7px;font-family:'Space Mono',monospace}
   .lead{text-align:center;color:var(--muted);font-size:12px;opacity:.8;margin-top:4px;line-height:1.7}
   .dlt{font-size:13px;font-weight:700;font-family:'Space Mono',monospace;white-space:nowrap}
   .dlt.up{color:var(--green)}.dlt.down{color:var(--red)}.dlt.flat{color:var(--muted)}
@@ -1901,8 +1908,8 @@ MARKET_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
   <div class="head">
     <div class="mark">CHRONOTRACKER</div>
     <h1>📊 وضع السوق</h1>
-    <p>اتجاه السوق كل أسبوعين عبر آخر ~6 أشهر — من المراجع الموثوقة (٣ مبيعات فأكثر)</p>
-    <div class="lead">تقرأ لك حالة السوق: حار / بارد / عادي — عبر ٣ مؤشرات تحت.</div>
+    <p>اتجاه السوق شهرياً عبر آخر سنة — من المراجع الموثوقة (٣ مبيعات فأكثر)</p>
+    <div class="lead">تقرأ لك حالة السوق: حار / بارد / عادي — مقارنة آخر شهر بالأشهر السابقة.</div>
   </div>
   <div id="body"></div>
   <div class="foot">ChronoTracker</div>
@@ -1910,33 +1917,46 @@ MARKET_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
 <script>
 const $=id=>document.getElementById(id);
 function fmt(n){return Number(n).toLocaleString('en-US');}
-function spark(vals,color){
-  const v=vals.filter(x=>x!=null); if(v.length<2) return '';
+function spark(vals,color,curLast){
+  const idx=[],v=[]; vals.forEach((y,i)=>{ if(y!=null){idx.push(i);v.push(y);} });
+  if(v.length<2) return '';
   const W=300,H=46,p=5, mn=Math.min(...v),mx=Math.max(...v),rng=(mx-mn)||1;
   const xy=i=>[p+(W-2*p)*i/(v.length-1), H-p-(H-2*p)*(v[i]-mn)/rng];
-  const pts=v.map((_,i)=>xy(i).map(n=>n.toFixed(1)).join(',')).join(' ');
-  const [lx,ly]=xy(v.length-1);
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none">
-    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-    <circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="3" fill="${color}"/></svg>`;
+  const pt=i=>xy(i).map(n=>n.toFixed(1)).join(',');
+  const dotLast = curLast && idx[idx.length-1]===vals.length-1;   // آخر نقطة مرئية = الشهر الجاري
+  let g='';
+  if(dotLast){
+    const solid=v.slice(0,-1).map((_,i)=>pt(i)).join(' ');
+    g+=`<polyline points="${solid}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    g+=`<polyline points="${pt(v.length-2)} ${pt(v.length-1)}" fill="none" stroke="${color}" stroke-width="2" stroke-dasharray="3 3" opacity="0.45"/>`;
+    const [lx,ly]=xy(v.length-1);
+    g+=`<circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="3" fill="none" stroke="${color}" stroke-width="1.5" opacity="0.65"/>`;
+  } else {
+    g+=`<polyline points="${v.map((_,i)=>pt(i)).join(' ')}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    const [lx,ly]=xy(v.length-1);
+    g+=`<circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="3" fill="${color}"/>`;
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none">${g}</svg>`;
 }
 function dlt(chg,unit){
   if(chg==null) return '';
   const cls=chg>0?'up':chg<0?'down':'flat', a=chg>0?'▲':chg<0?'▼':'▬';
   return `<span class="dlt ${cls}">${a} ${Math.abs(chg)}${unit}</span>`;
 }
-function card(ttl,help,valHtml,sub,deltaHtml,vals,color,explain){
+function card(ttl,help,valHtml,sub,deltaHtml,vals,color,curLast,explain){
+  const cap = curLast ? `<div class="mcur">◌ آخر نقطة منقّطة = الشهر الجاري (لسه ما خلص)</div>` : '';
   return `<div class="mcard">
     <div class="mtop"><div><div class="mttl">${ttl}</div><div class="mhelp">${help}</div></div>${deltaHtml}</div>
     <div class="mval">${valHtml}</div><div class="msub">${sub}</div>
-    <div class="mspark">${spark(vals,color)}</div>${explain||''}</div>`;
+    <div class="mspark">${spark(vals,color,curLast)}</div>${cap}${explain||''}</div>`;
 }
 async function load(){
   let m; try{ m=await (await fetch('/api/market')).json(); }catch(e){ m=null; }
-  if(!m || !m.buckets || !m.buckets.length){ $('body').innerHTML='<div class="empty">تعذّر حساب وضع السوق حالياً.</div>'; return; }
-  const v=m.verdict, h=m.header, B=m.buckets;
+  if(!m || !m.months || !m.months.length || !m.header || !m.header.level){ $('body').innerHTML='<div class="empty">تعذّر حساب وضع السوق حالياً.</div>'; return; }
+  const v=m.verdict, h=m.header, M=m.months;
+  const curLast = M.length>0 && M[M.length-1].current;   // آخر شهر = الجاري (لسه ما خلص)
   const vcls=v.label.includes('حار')?'hot':v.label.includes('بارد')?'cold':'stable';
-  // مستوى: نسبة فوق/تحت الطبيعي
+  // مستوى آخر شهر مكتمل: نسبة فوق/تحت الطبيعي
   const lvNow=h.level.now, lvPct=lvNow!=null?Math.round((lvNow-1)*1000)/10:null;
   const lvSub = lvPct==null?'—':(lvPct>0.3?'فوق القيمة الطبيعية':lvPct<-0.3?'تحت القيمة الطبيعية':'عند القيمة الطبيعية');
   const lvColor = lvPct>0.3?'#5dcaa5':lvPct<-0.3?'#f5a3a3':'#ecc964';
@@ -1945,23 +1965,21 @@ async function load(){
       <div class="emoji">${v.emoji}</div><div class="vlabel">${v.label}</div>
       <div class="vnote">${v.note}</div>
     </div>
-    <div class="subhint">آخر فترة مقابل متوسط الـ4 فترات قبلها</div>
+    <div class="subhint">آخر شهر مكتمل (${m.last_month}) مقابل متوسط الأشهر السابقة</div>
     ${card('📐 مستوى السوق','سعر البيع ÷ القيمة الطبيعية (وسيط)',
        (lvPct>0?'+':'')+lvPct+'%', lvSub, dlt(h.level.chg,'%'),
-       B.map(b=>b.level), lvColor,
-       `<div class="mexp"><b>يعني:</b> الأسعار الحين غالية ولا عادية مقارنةً بالسعر الطبيعي للساعة؟</div>
-        <div class="mex"><b>مثل:</b> هل الطماط هالأسبوع أغلى من المعتاد؟</div>`)}
-    ${card('📊 النشاط','عدد المبيعات بالفترة',
-       fmt(h.activity.now)+' <small style="font-size:13px;color:var(--muted)">مبيع</small>', 'كل أسبوعين',
-       dlt(h.activity.chg,'%'), B.map(b=>b.activity), '#e8c860',
-       `<div class="mwarn">⚠️ آخر فترة دائماً تطلع ناقصة (بياناتها لسه تتجمّع) — لا تعتمد آخر نقطة، اقرأ الاتجاه من النقاط اللي قبلها.</div>
-        <div class="mexp"><b>يعني:</b> كم ساعة تنباع؟ يقيس زحمة السوق.</div>
-        <div class="mex"><b>مثل:</b> تعد زباين المحل الظهر وتقول «اليوم أقل من أمس» — طبيعي، اليوم ما خلص.</div>`)}
+       M.map(x=>x.level), lvColor, curLast,
+       `<div class="mexp"><b>يعني:</b> الأسعار هالشهر غالية ولا عادية مقابل السعر الطبيعي للساعة؟</div>
+        <div class="mex"><b>مثل:</b> هل الطماط هالشهر أغلى من المعتاد؟</div>`)}
+    ${card('📊 النشاط','عدد المبيعات بالشهر',
+       fmt(h.activity.now)+' <small style="font-size:13px;color:var(--muted)">مبيع</small>', 'بالشهر المكتمل',
+       dlt(h.activity.chg,'%'), M.map(x=>x.activity), '#e8c860', curLast,
+       `<div class="mexp"><b>يعني:</b> كم ساعة انباعت هالشهر؟ يقيس زحمة السوق.</div>`)}
     ${card('🔁 نسبة البيع','المباع ÷ المعروض',
        h.sell.now+'%', 'من المعروض انباع', dlt(h.sell.chg,'pt'),
-       B.map(b=>b.sell), '#9ec7f0',
-       `<div class="mexp"><b>يعني:</b> من كل الساعات المعروضة، كم نسبة لقت مشتري؟</div>
-        <div class="mex"><b>مثل:</b> عرضت ١٠٠ ساعة، بعت ٥٧.</div>`)}`;
+       M.map(x=>x.sell), '#9ec7f0', curLast,
+       `<div class="mexp"><b>يعني:</b> من كل الساعات المعروضة هالشهر، كم نسبة لقت مشتري؟</div>
+        <div class="mex"><b>مثل:</b> عُرضت ١٠٠ ساعة، انباعت ٥٧.</div>`)}`;
 }
 load();
 </script></body></html>"""
