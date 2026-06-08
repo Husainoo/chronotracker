@@ -71,20 +71,27 @@ BROWSE_FAMILIES = {}
 BROWSE_REFS = {}
 DEALS = []
 HOT = []
+BUDGET = []
 
 def boot():
     """تحميل المحرك وبناء فهرس البحث. يُستدعى بعد ربط المنفذ مباشرة."""
     global ENGINE, SEARCH_INDEX, _years_by_ref, _REF_INFO, _REF_SIZE, HOTTEST
-    global BROWSE_BRANDS, BROWSE_FAMILIES, BROWSE_REFS, DEALS, HOT, LOGOS
+    global BROWSE_BRANDS, BROWSE_FAMILIES, BROWSE_REFS, DEALS, HOT, BUDGET, LOGOS
     print("جاري تحميل المحرك والبيانات ...")
     ENGINE = WatchValuationEngine(csv_path=CSV_PATH, discontinued_csv=DISC_CSV)
 
     _df = ENGINE.sold
     _yr = pd.to_numeric(_df['year'], errors='coerce')
     _dfy = _df.assign(_y=_yr)
+
+    def _mode1(x):                              # القيمة الأكثر شيوعاً (للمقاس/لون الدايل)
+        m = x.astype(str).mode()
+        return m.iloc[0] if len(m) else ''
+
     _idx = (_dfy.groupby('referance')
             .agg(brand=('brand', 'first'), model=('model', 'first'),
-                 nick=('nickName', 'first'), n=('soldPrice', 'size'))
+                 nick=('nickName', 'first'), n=('soldPrice', 'size'),
+                 size=('size', _mode1), dial=('dialColor', _mode1))
             .reset_index().sort_values('n', ascending=False))
 
     years_by_ref = {}
@@ -94,15 +101,25 @@ def boot():
         ys = ENGINE.plausible_years(str(ref), ys)
         years_by_ref[str(ref)] = ys
 
+    def _clean(v):                             # تنظيف قيمة (size/dial) — لا اختلاق
+        v = str(v).strip()
+        return '' if v.lower() in ('', 'nan', 'none') else v
+
     index = []
     for _, r in _idx.iterrows():
         nick = '' if pd.isna(r['nick']) else str(r['nick'])
+        _size = _clean(r['size'])
+        _dial = _clean(r['dial'])
+        if _dial.lower().endswith(' dial'):    # «Black Dial» → «Black» للعرض المضغوط
+            _dial = _dial[:-5].strip()
         index.append({
             'ref': str(r['referance']),
             'brand': str(r['brand']),
             'model': str(r['model']).strip(),
             'nick': nick,
             'n': int(r['n']),
+            'size': _size,
+            'dial': _dial,
             'years': years_by_ref.get(str(r['referance']), []),
             'label': f"{r['referance']} — {r['brand']} {str(r['model']).strip()}"
                      + (f" ({nick})" if nick else "") + f"  ·  {int(r['n'])} صفقة",
@@ -198,6 +215,12 @@ def boot():
             _h['size'] = _REF_SIZE.get(_h.get('ref', ''), '')
     except Exception:
         HOT = []
+
+    # فهرس "ضمن ميزانيتي" — محسوب بالذاكرة من بيانات المحرك (دائماً محدّث)
+    try:
+        BUDGET = build_budget_index()
+    except Exception:
+        BUDGET = []
 
     print(f"✓ جاهز — {len(ENGINE.sold):,} صفقة، {len(SEARCH_INDEX):,} موديل قابل للتسعير")
 
@@ -318,6 +341,44 @@ def years_table(ref, condition='Pre-owned', full_set=True):
     return out
 
 
+def build_budget_index():
+    """فهرس «ضمن ميزانيتي»: لكل (مرجع × حالة) عنده ≥3 بيعات بآخر 365 يوم —
+    السعر التمثيلي (وسيط آخر سنة) + عدد المبيعات (سيولة/موثوقية) + اتجاه 90 يوم.
+    لا نُدرج المراجع رقيقة البيانات (سعر مبني على بيعة-بيعتين)."""
+    s = ENGINE.sold
+    rd = ENGINE.ref_date
+    cut365 = rd - pd.Timedelta(days=365)
+    cut90 = rd - pd.Timedelta(days=90)
+    cut180 = rd - pd.Timedelta(days=180)
+    recent = s[s['priceDate'] >= cut365]
+    meta = {m['ref']: m for m in SEARCH_INDEX}
+    out = []
+    for (ref, c2), grp in recent.groupby(['referance', 'cond2'], observed=True):
+        n = len(grp)
+        if n < 3:                              # موثوقية: ≥3 بيعات حقيقية
+            continue
+        price = int(round(grp['soldPrice'].median()))
+        if price <= 0:
+            continue
+        last90 = grp[grp['priceDate'] >= cut90]['soldPrice']
+        prev90 = grp[(grp['priceDate'] >= cut180) & (grp['priceDate'] < cut90)]['soldPrice']
+        trend = None                           # اتجاه آخر 90 يوم (٪) — None لو بيانات قليلة
+        if len(last90) >= 2 and len(prev90) >= 2:
+            pv = prev90.median()
+            if pv > 0:
+                trend = round((last90.median() / pv - 1) * 100)
+        m = meta.get(str(ref), {})
+        out.append({
+            'ref': str(ref), 'brand': m.get('brand', ''), 'model': m.get('model', ''),
+            'cond': ('غير مستخدمة' if str(c2).startswith('Unworn') else 'مستخدمة'),
+            'price': price, 'n': int(n), 'trend': trend,
+            'size': m.get('size', ''), 'dial': m.get('dial', ''),
+            'image': image_file_for(str(ref)),
+        })
+    out.sort(key=lambda x: x['price'], reverse=True)
+    return out
+
+
 HTML = r"""<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -358,6 +419,7 @@ HTML = r"""<!DOCTYPE html>
   .result:hover,.result.active{background:rgba(201,162,39,.12)}
   .result .ref{font-family:'Space Mono',monospace;color:var(--gold-soft);font-size:13px}
   .result .meta{color:var(--muted);font-size:12px;margin-top:2px}
+  .result .spec{color:var(--gold-soft);font-size:11.5px;margin-top:2px;opacity:.85;font-family:'Space Mono',monospace}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
   .opts{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:16px}
   .seg{display:flex;background:var(--surface2);border:1px solid var(--line);
@@ -577,6 +639,7 @@ async function doSearch(q){
     `<div class="result" data-i="${i}">
        <div class="ref">${m.is_fav?'<span style="color:#e8c860;margin-left:5px">★</span>':''}${m.ref}</div>
        <div class="meta">${m.brand} ${m.model}${m.nick?' · '+m.nick:''} · ${m.n} صفقة</div>
+       ${(m.size||m.dial)?`<div class="spec">${m.size?'📏 '+m.size:''}${m.size&&m.dial?' · ':''}${m.dial?'🎨 '+m.dial:''}</div>`:''}
      </div>`).join('');
   box.classList.add('show');
   box.querySelectorAll('.result').forEach(el=>{
@@ -1590,6 +1653,122 @@ load();
 </script></body></html>"""
 
 
+BUDGET_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChronoTracker — ضمن ميزانيتي</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{--bg:#0e0e10;--surface:#19191d;--surface2:#222228;--line:#2e2e36;--gold:#c9a227;--gold-soft:#e8c860;--text:#ececf0;--muted:#8a8a95;--green:#3fb27f}
+  body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans Arabic',sans-serif;min-height:100vh;line-height:1.6;padding:24px 16px}
+  .wrap{max-width:760px;margin:0 auto}
+  .head{text-align:center;margin-bottom:16px;padding-top:16px}
+  .head .mark{font-family:'Space Mono',monospace;color:var(--gold);font-size:13px;letter-spacing:2px}
+  .head h1{font-size:24px;font-weight:700;margin:6px 0}
+  .head p{color:var(--muted);font-size:13px}
+  .filters{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:10px}
+  .filters select,.filters input{background:var(--surface2);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:7px 11px;font-family:inherit;font-size:13px}
+  .filters input{width:150px;text-align:center;font-family:'Space Mono',monospace}
+  .filters input:focus{outline:none;border-color:rgba(201,162,39,.6)}
+  .count{color:var(--muted);font-size:12px;text-align:center;margin-bottom:14px;font-family:'Space Mono',monospace}
+  .dcard{display:flex;gap:13px;align-items:stretch;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px;cursor:pointer;transition:all .2s;text-decoration:none;min-height:108px}
+  .dcard:hover{border-color:rgba(201,162,39,.5);transform:translateY(-2px)}
+  .dimg{width:100px;flex:0 0 auto;align-self:stretch;background:#fff;border-radius:11px;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:6px}
+  .dimg img{max-width:100%;max-height:100%;object-fit:contain}
+  .dbody{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center}
+  .dside{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:6px;text-align:left}
+  .dtitle{font-size:15px;font-weight:600;color:var(--text)}
+  .dref{font-family:'Space Mono',monospace;color:var(--gold-soft);font-size:12px;margin-top:2px}
+  .bprice{color:var(--gold-soft);font-weight:700;font-size:16px;font-family:'Space Mono',monospace;white-space:nowrap}
+  .bprice small{font-size:11px;color:var(--muted);font-weight:400}
+  .btrend{font-size:13px;font-weight:700;font-family:'Space Mono',monospace;white-space:nowrap}
+  .btrend.up{color:#5dcaa5}.btrend.down{color:#f5a3a3}.btrend.flat{color:var(--muted)}
+  .dmeta{margin-top:7px;color:var(--muted);font-size:12px;display:flex;flex-wrap:wrap;gap:5px 11px}
+  .empty{text-align:center;color:var(--muted);padding:50px 20px;font-size:14px;line-height:1.9}
+  .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:28px;font-family:'Space Mono',monospace}
+</style></head><body>
+<!--NAV-->
+<div class="wrap">
+  <div class="head">
+    <div class="mark">CHRONOTRACKER</div>
+    <h1>🛒 ضمن ميزانيتي</h1>
+    <p>ساعات سعرها التمثيلي ≤ ميزانيتك — تُعرض فقط الموثوقة (≥3 مبيعات بآخر سنة)</p>
+  </div>
+  <div class="filters">
+    <input type="number" id="fBudget" inputmode="numeric" placeholder="ميزانيتك (دينار)" min="0">
+    <select id="fCond">
+      <option value="مستخدمة">مستخدمة</option>
+      <option value="غير مستخدمة">غير مستخدمة</option>
+    </select>
+    <select id="fBrand"><option value="all">الماركة: الكل</option></select>
+    <select id="fSort">
+      <option value="price">الأغلى ضمن ميزانيتي</option>
+      <option value="trend">الأكثر ارتفاعاً</option>
+      <option value="active">الأكثر نشاطاً</option>
+    </select>
+  </div>
+  <div class="count" id="count"></div>
+  <div id="list"></div>
+  <div class="foot">ChronoTracker</div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const CAP=300;
+let ALL=[];
+var SKETCH = '<svg viewBox="0 0 60 60" width="40" height="40" aria-hidden="true" fill="none" stroke="#a8a8b0" stroke-width="2" style="width:58px;height:58px"><rect x="25" y="6" width="10" height="11" rx="2"/><rect x="25" y="43" width="10" height="11" rx="2"/><circle cx="30" cy="30" r="19"/><circle cx="30" cy="30" r="13"/><line x1="30" y1="30" x2="30" y2="21" stroke-linecap="round"/><line x1="30" y1="30" x2="37" y2="31" stroke-linecap="round"/></svg>';
+function fmt(n){return Number(n).toLocaleString('en-US');}
+function trendHtml(t){
+  if(t==null) return '';
+  const cls = t>0?'up':t<0?'down':'flat', a=t>0?'▲':t<0?'▼':'▬';
+  return `<div class="btrend ${cls}">${a} ${Math.abs(t)}%</div>`;
+}
+function applyFilters(){
+  const bud=parseInt($('fBudget').value,10);
+  const cond=$('fCond').value, brand=$('fBrand').value, sort=$('fSort').value;
+  if(!bud || bud<=0){
+    $('count').textContent='';
+    $('list').innerHTML='<div class="empty">💰 أدخل ميزانيتك بالدينار فوق<br>لنعرض الساعات اللي تقدر تشتريها (بالحالة المختارة).</div>';
+    return;
+  }
+  let ds=ALL.filter(d=>d.cond===cond && d.price<=bud);
+  if(brand!=='all') ds=ds.filter(d=>d.brand===brand);
+  if(sort==='trend') ds=ds.slice().sort((a,b)=>(b.trend??-999)-(a.trend??-999));
+  else if(sort==='active') ds=ds.slice().sort((a,b)=>b.n-a.n);
+  else ds=ds.slice().sort((a,b)=>b.price-a.price);   // الأغلى ضمن الميزانية (افتراضي)
+  const total=ds.length, shown=ds.slice(0,CAP);
+  $('count').textContent = total
+    ? `${fmt(total)} ساعة ضمن ${fmt(bud)} دينار (${cond})` + (total>CAP?` — معروض أعلى ${CAP}`:'')
+    : `لا توجد ساعات موثوقة ضمن ${fmt(bud)} دينار بهذه الفلاتر`;
+  $('list').innerHTML = shown.map(d=>`
+    <a class="dcard" href="/?ref=${encodeURIComponent(d.ref)}">
+      <div class="dimg">${d.image?`<img src="${d.image}" alt="${d.ref}" onerror="this.parentElement.innerHTML=SKETCH">`:SKETCH}</div>
+      <div class="dbody">
+        <div class="dtitle">${d.brand} ${d.model}</div>
+        <div class="dref">${d.ref}</div>
+        <div class="dmeta">
+          <span>📊 ${d.n} بيعة/سنة</span>
+          ${d.size?`<span>📏 ${d.size}</span>`:''}
+          ${d.dial?`<span>🎨 ${d.dial}</span>`:''}
+        </div>
+      </div>
+      <div class="dside">
+        <div class="bprice">${fmt(d.price)} <small>KWD</small></div>
+        ${trendHtml(d.trend)}
+      </div>
+    </a>`).join('');
+}
+async function load(){
+  try{ const r=await fetch('/api/budget'); ALL=await r.json(); if(!Array.isArray(ALL)) ALL=[]; }catch(e){ ALL=[]; }
+  const brands=[...new Set(ALL.map(d=>d.brand))].sort();
+  const sel=$('fBrand'); brands.forEach(b=>{const o=document.createElement('option');o.value=b;o.textContent=b;sel.appendChild(o);});
+  ['fBudget','fCond','fBrand','fSort'].forEach(id=>$(id).addEventListener('input',applyFilters));
+  ['fCond','fBrand','fSort'].forEach(id=>$(id).addEventListener('change',applyFilters));
+  applyFilters();
+}
+load();
+</script></body></html>"""
+
+
 LATEST_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ChronoTracker — أحدث المبيعات</title>
@@ -1739,11 +1918,12 @@ NAV_BAR = (
     f'<a href="/favorites" style="{_NAV_PILL}">⭐ المفضّلة</a>'
     f'<a href="/deals" style="{_NAV_PILL}">📉 الأكثر نزولاً</a>'
     f'<a href="/hot" style="{_NAV_PILL}">🔥 الأكثر سخونة</a>'
+    f'<a href="/budget" style="{_NAV_PILL}">🛒 ضمن ميزانيتي</a>'
     f'<a href="/latest" style="{_NAV_PILL}">🆕 أحدث المبيعات</a>'
     f'<a href="/browse" style="{_NAV_PILL}">🖼️ تصفّح</a>'
     '</nav>'
 )
-for _pg in ('HTML', 'FAV_HTML', 'BROWSE_HTML', 'DEALS_HTML', 'HOT_HTML', 'LATEST_HTML'):
+for _pg in ('HTML', 'FAV_HTML', 'BROWSE_HTML', 'DEALS_HTML', 'HOT_HTML', 'BUDGET_HTML', 'LATEST_HTML'):
     globals()[_pg] = globals()[_pg].replace('<!--NAV-->', NAV_BAR)
 
 
@@ -1810,6 +1990,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send(200, HOT_HTML, 'text/html')
         elif path == '/api/hot':
             self._send(200, jdumps(HOT, ensure_ascii=False))
+        elif path == '/budget' or path == '/budget.html':
+            self._send(200, BUDGET_HTML, 'text/html')
+        elif path == '/api/budget':
+            self._send(200, jdumps(BUDGET, ensure_ascii=False))
         elif path == '/latest' or path == '/latest.html':
             self._send(200, LATEST_HTML, 'text/html')
         elif path == '/api/latest':
