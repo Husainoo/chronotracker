@@ -91,7 +91,8 @@ def boot():
     _idx = (_dfy.groupby('referance')
             .agg(brand=('brand', 'first'), model=('model', 'first'),
                  nick=('nickName', 'first'), n=('soldPrice', 'size'),
-                 size=('size', _mode1), dial=('dialColor', _mode1))
+                 size=('size', _mode1), dial=('dialColor', _mode1),
+                 metal=('metal', _mode1))
             .reset_index().sort_values('n', ascending=False))
 
     years_by_ref = {}
@@ -112,6 +113,7 @@ def boot():
         _dial = _clean(r['dial'])
         if _dial.lower().endswith(' dial'):    # «Black Dial» → «Black» للعرض المضغوط
             _dial = _dial[:-5].strip()
+        _metal = _clean(r['metal']).replace('Stainless Steel', 'Steel')  # اختصار شائع، بلا تغيير معنى
         index.append({
             'ref': str(r['referance']),
             'brand': str(r['brand']),
@@ -120,6 +122,7 @@ def boot():
             'n': int(r['n']),
             'size': _size,
             'dial': _dial,
+            'metal': _metal,
             'years': years_by_ref.get(str(r['referance']), []),
             'label': f"{r['referance']} — {r['brand']} {str(r['model']).strip()}"
                      + (f" ({nick})" if nick else "") + f"  ·  {int(r['n'])} صفقة",
@@ -419,7 +422,7 @@ HTML = r"""<!DOCTYPE html>
   .result:hover,.result.active{background:rgba(201,162,39,.12)}
   .result .ref{font-family:'Space Mono',monospace;color:var(--gold-soft);font-size:13px}
   .result .meta{color:var(--muted);font-size:12px;margin-top:2px}
-  .result .spec{color:var(--gold-soft);font-size:11.5px;margin-top:2px;opacity:.85;font-family:'Space Mono',monospace}
+  .result .spec{color:var(--gold-soft);font-size:11.5px;margin-top:3px;opacity:.85;font-family:'Space Mono',monospace;display:flex;flex-wrap:wrap;gap:2px 10px}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
   .opts{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:16px}
   .seg{display:flex;background:var(--surface2);border:1px solid var(--line);
@@ -639,7 +642,7 @@ async function doSearch(q){
     `<div class="result" data-i="${i}">
        <div class="ref">${m.is_fav?'<span style="color:#e8c860;margin-left:5px">★</span>':''}${m.ref}</div>
        <div class="meta">${m.brand} ${m.model}${m.nick?' · '+m.nick:''} · ${m.n} صفقة</div>
-       ${(m.size||m.dial)?`<div class="spec">${m.size?'📏 '+m.size:''}${m.size&&m.dial?' · ':''}${m.dial?'🎨 '+m.dial:''}</div>`:''}
+       ${(m.size||m.dial||m.metal)?`<div class="spec">${m.size?`<span>📏 ${m.size}</span>`:''}${m.dial?`<span>🎨 ${m.dial}</span>`:''}${m.metal?`<span>🔩 ${m.metal}</span>`:''}</div>`:''}
      </div>`).join('');
   box.classList.add('show');
   box.querySelectorAll('.result').forEach(el=>{
