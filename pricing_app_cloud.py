@@ -1885,6 +1885,12 @@ MARKET_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
   .mval{font-size:26px;font-weight:700;font-family:'Space Mono',monospace;margin-top:6px}
   .msub{font-size:12px;color:var(--muted);margin-top:1px}
   .mspark{margin-top:10px}
+  .mexp{font-size:12px;color:var(--muted);margin-top:11px;line-height:1.75}
+  .mexp b{color:var(--text);font-weight:600;opacity:.85}
+  .mex{font-size:11px;color:var(--muted);opacity:.72;margin-top:2px;line-height:1.65}
+  .mex b{font-weight:600}
+  .mwarn{margin-top:11px;padding:9px 12px;border-radius:9px;background:rgba(201,162,39,.13);border:1px solid rgba(201,162,39,.5);color:#e8c860;font-size:11.5px;line-height:1.75}
+  .lead{text-align:center;color:var(--muted);font-size:12px;opacity:.8;margin-top:4px;line-height:1.7}
   .dlt{font-size:13px;font-weight:700;font-family:'Space Mono',monospace;white-space:nowrap}
   .dlt.up{color:var(--green)}.dlt.down{color:var(--red)}.dlt.flat{color:var(--muted)}
   .empty{text-align:center;color:var(--muted);padding:50px 20px;font-size:14px}
@@ -1895,7 +1901,8 @@ MARKET_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
   <div class="head">
     <div class="mark">CHRONOTRACKER</div>
     <h1>📊 وضع السوق</h1>
-    <p>اتجاه السوق كل أسبوعين عبر آخر ~6 أشهر — من المراجع الموثوقة (≥3 مبيعات)</p>
+    <p>اتجاه السوق كل أسبوعين عبر آخر ~6 أشهر — من المراجع الموثوقة (٣ مبيعات فأكثر)</p>
+    <div class="lead">تقرأ لك حالة السوق: حار / بارد / عادي — عبر ٣ مؤشرات تحت.</div>
   </div>
   <div id="body"></div>
   <div class="foot">ChronoTracker</div>
@@ -1918,11 +1925,11 @@ function dlt(chg,unit){
   const cls=chg>0?'up':chg<0?'down':'flat', a=chg>0?'▲':chg<0?'▼':'▬';
   return `<span class="dlt ${cls}">${a} ${Math.abs(chg)}${unit}</span>`;
 }
-function card(ttl,help,valHtml,sub,deltaHtml,vals,color){
+function card(ttl,help,valHtml,sub,deltaHtml,vals,color,explain){
   return `<div class="mcard">
     <div class="mtop"><div><div class="mttl">${ttl}</div><div class="mhelp">${help}</div></div>${deltaHtml}</div>
     <div class="mval">${valHtml}</div><div class="msub">${sub}</div>
-    <div class="mspark">${spark(vals,color)}</div></div>`;
+    <div class="mspark">${spark(vals,color)}</div>${explain||''}</div>`;
 }
 async function load(){
   let m; try{ m=await (await fetch('/api/market')).json(); }catch(e){ m=null; }
@@ -1938,16 +1945,23 @@ async function load(){
       <div class="emoji">${v.emoji}</div><div class="vlabel">${v.label}</div>
       <div class="vnote">${v.note}</div>
     </div>
-    <div class="subhint">آخر باكت مقابل متوسط الـ4 باكتات قبله</div>
+    <div class="subhint">آخر فترة مقابل متوسط الـ4 فترات قبلها</div>
     ${card('📐 مستوى السوق','سعر البيع ÷ القيمة الطبيعية (وسيط)',
        (lvPct>0?'+':'')+lvPct+'%', lvSub, dlt(h.level.chg,'%'),
-       B.map(b=>b.level), lvColor)}
-    ${card('📊 النشاط','عدد المبيعات بالباكت',
+       B.map(b=>b.level), lvColor,
+       `<div class="mexp"><b>يعني:</b> الأسعار الحين غالية ولا عادية مقارنةً بالسعر الطبيعي للساعة؟</div>
+        <div class="mex"><b>مثل:</b> هل الطماط هالأسبوع أغلى من المعتاد؟</div>`)}
+    ${card('📊 النشاط','عدد المبيعات بالفترة',
        fmt(h.activity.now)+' <small style="font-size:13px;color:var(--muted)">مبيع</small>', 'كل أسبوعين',
-       dlt(h.activity.chg,'%'), B.map(b=>b.activity), '#e8c860')}
+       dlt(h.activity.chg,'%'), B.map(b=>b.activity), '#e8c860',
+       `<div class="mwarn">⚠️ آخر فترة دائماً تطلع ناقصة (بياناتها لسه تتجمّع) — لا تعتمد آخر نقطة، اقرأ الاتجاه من النقاط اللي قبلها.</div>
+        <div class="mexp"><b>يعني:</b> كم ساعة تنباع؟ يقيس زحمة السوق.</div>
+        <div class="mex"><b>مثل:</b> تعد زباين المحل الظهر وتقول «اليوم أقل من أمس» — طبيعي، اليوم ما خلص.</div>`)}
     ${card('🔁 نسبة البيع','المباع ÷ المعروض',
        h.sell.now+'%', 'من المعروض انباع', dlt(h.sell.chg,'pt'),
-       B.map(b=>b.sell), '#9ec7f0')}`;
+       B.map(b=>b.sell), '#9ec7f0',
+       `<div class="mexp"><b>يعني:</b> من كل الساعات المعروضة، كم نسبة لقت مشتري؟</div>
+        <div class="mex"><b>مثل:</b> عرضت ١٠٠ ساعة، بعت ٥٧.</div>`)}`;
 }
 load();
 </script></body></html>"""
