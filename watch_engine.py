@@ -18,7 +18,7 @@ class WatchValuationEngine:
         usecols = ['brand', 'model', 'nickName', 'referance', 'size', 'dialColor',
                    'metal', 'braceletMaterial', 'retailPrice', 'soldPrice', 'lastBid',
                    'priceDate', 'condition', 'fullSet', 'year', 'status', 'pageName',
-                   'country', 'remarks']
+                   'country', 'remarks', 'auctionWatchId']
         cat_cols = ['brand', 'model', 'nickName', 'size', 'dialColor', 'metal',
                     'braceletMaterial', 'condition', 'fullSet', 'status', 'pageName',
                     'country']
@@ -26,6 +26,13 @@ class WatchValuationEngine:
         for c in ('retailPrice', 'soldPrice', 'lastBid'):
             dtypes[c] = 'float32'
         df = pd.read_csv(csv_path, usecols=usecols, dtype=dtypes)
+        # إزالة تكرار دفاعية: نفس auctionWatchId يدخل مرة واحدة فقط
+        # (تكرارات تنتج من إعادة دمج في سكربتات التحديث — تضاعف وزن صفقة واحدة)
+        dup = df['auctionWatchId'].notna() & df.duplicated(subset=['auctionWatchId'],
+                                                           keep='first')
+        if dup.any():
+            df = df[~dup]
+        df = df.drop(columns=['auctionWatchId'])
         df['priceDate'] = pd.to_datetime(df['priceDate'])
         df['year'] = pd.to_numeric(df['year'], errors='coerce').astype('float32')
         df.loc[(df['year'] < 1990) | (df['year'] > 2026), 'year'] = np.nan
@@ -35,6 +42,22 @@ class WatchValuationEngine:
                        .replace({'Pre-owned Like New': 'Pre-owned'}).astype('category'))
         self.df = df
         self.sold = df[(df['status'] == 'Sold') & (df['soldPrice'] > 0)].copy()
+        # فلتر شواذ (winsorize): قصّ — لا حذف — الأسعار الأبعد من 4×MAD عن وسيط
+        # المرجع، فقط للمراجع ذات ≥5 بيعات (الأقل من ذلك لا يُفلتر). يحمي الوسيط
+        # الموزون من صف فاسد واحد يبتلع كل الوزن (مثال موثّق: بيعة 523 د.ك
+        # بسنة فاسدة جعلت تقييم 277200-0005 ينهار من ~2,400 إلى 530).
+        # السعر الأصلي يبقى في soldPrice_raw (للجداول والمقارنات).
+        s = self.sold
+        s['soldPrice_raw'] = s['soldPrice']
+        med = s.groupby('referance')['soldPrice'].transform('median')
+        mad = ((s['soldPrice'] - med).abs()
+               .groupby(s['referance']).transform('median'))
+        n_ref = s.groupby('referance')['soldPrice'].transform('size')
+        w_ok = (n_ref >= 5) & (mad > 0)
+        lo_b, hi_b = med - 4 * mad, med + 4 * mad
+        s.loc[w_ok, 'soldPrice'] = (s.loc[w_ok, 'soldPrice']
+                                    .clip(lower=lo_b[w_ok], upper=hi_b[w_ok])
+                                    .astype('float32'))
         self.notsold = df[(df['status'] == 'Not-Sold') & (df['lastBid'] > 0)].copy()
         self.ref_date = self.sold['priceDate'].max()
         self._coef_cache = {}
@@ -127,8 +150,15 @@ class WatchValuationEngine:
         return float(v[i])
 
     @staticmethod
-    def _conf(n_pool, n_comps):
-        return 'عالية' if n_pool >= 8 else 'متوسطة' if n_comps >= 4 else 'منخفضة'
+    def _conf(n_pool, n_comps, age_days=None):
+        lvl = 2 if n_pool >= 8 else 1 if n_comps >= 4 else 0
+        # قِدم أحدث بيعة في العينة يخفّض الثقة: درجة بعد سنة، درجتين بعد سنتين
+        if age_days is not None:
+            if age_days > 730:
+                lvl -= 2
+            elif age_days > 365:
+                lvl -= 1
+        return ('منخفضة', 'متوسطة', 'عالية')[max(0, lvl)]
 
     def _find_jump_point(self, comps, min_each=5, threshold=0.15):
         """
@@ -179,10 +209,14 @@ class WatchValuationEngine:
                 if len(after) >= 5:
                     comps = after   # نتجاهل الأسعار قبل القفزة بالأفرج
 
-        brand = comps['brand'].mode()[0]
-        model = comps['model'].mode()[0]
+        # حارس القيم الفارغة: mode() على عمود كله NaN يرجّع سلسلة فارغة —
+        # بدون الحارس كان المرجع ذو الماركة الفارغة (مثل IW377903) ينهار بـ KeyError
+        bm = comps['brand'].dropna().mode()
+        brand = bm.iloc[0] if len(bm) else ''
+        mm = comps['model'].dropna().mode()
+        model = mm.iloc[0] if len(mm) else ''
         nick = comps['nickName'].dropna().mode()
-        nick = nick[0] if len(nick) else ''
+        nick = nick.iloc[0] if len(nick) else ''
         c = self._coefs(brand)
 
         # --- النافذة الزمنية ---
@@ -207,10 +241,38 @@ class WatchValuationEngine:
             if unworn_: f *= np.exp(c['unworn'])
             if full_:   f *= np.exp(c['full'])
             return f
+        # --- أوزان الحداثة مع حد أدنى لحجم العينة الفعّال (ESS) ---
+        # ESS=(Σw)²/Σw²: لو انخفض عن 3 فالوسيط الموزون يساوي عملياً «آخر بيعة»
+        # (كان يحدث في 81% من المراجع). العلاج التدريجي: توسيع النافذة أولاً،
+        # ثم رفع نصف العمر. الحالات السليمة (ESS≥3) تبقى على نصف العمر الافتراضي.
+        def _pw(p, hl):
+            return 0.5 ** ((self.ref_date - p['priceDate']).dt.days.values / hl)
+
+        def _ess(w_):
+            s2 = float((w_ * w_).sum())
+            return float(w_.sum()) ** 2 / s2 if w_.size and s2 > 0 else 0.0
+
+        eff_halflife = halflife
+        w = _pw(pool, eff_halflife)
+        if _ess(w) < 3 and jump_date is None:
+            # توسيع النافذة (ليس بعد قفزة — حتى لا نعيد أسعار ما قبل القفزة)
+            for win in (180, 365, 100000):
+                cand = comps[comps['priceDate'] >= self.ref_date - pd.Timedelta(days=win)]
+                if len(cand) > len(pool):
+                    pool = cand
+                    w = _pw(pool, eff_halflife)
+                    if _ess(w) >= 3:
+                        break
+        while _ess(w) < 3 and eff_halflife < 1200:
+            eff_halflife *= 2
+            w = _pw(pool, eff_halflife)
+        ess = _ess(w)
+        top_w_share = float(w.max() / w.sum()) if w.sum() > 0 else 1.0
+        pool_age_days = int((self.ref_date - pool['priceDate'].max()).days)
+
         norm = pool.apply(lambda r: r['soldPrice'] / factor(
             r['year'] if pd.notna(r['year']) else ref_year,
             r['cond2'] == 'Unworn', r['fs'] == 'Full'), axis=1).values
-        w = 0.5 ** ((self.ref_date - pool['priceDate']).dt.days.values / halflife)
         baseline = self._wmedian(norm, w)
 
         # --- القفزة السعرية: نستخدم اللي اكتشفناها (لو فيه) ---
@@ -347,6 +409,23 @@ class WatchValuationEngine:
         hi = max(p_hi, baseline) * tgt
         if year_adj_note:   # لو صحّحنا بالسنة، نستخدم نطاق السنة (محيط بالقيمة)
             lo, hi = lo_y, hi_y
+
+        # حارس Unworn: لو ما للمرجع ولا بيعة «غير مستخدمة» فعلية، العلاوة
+        # المعمَّمة من الماركة قد تنتج سعراً فوق أي سعر بِيع به المرجع إطلاقاً
+        # (وُثّق في Girard-Perregaux: +32.7% فوق أعلى سعر تاريخي).
+        # السقف: أعلى سعر تاريخي ×1.15.
+        if condition == 'Unworn':
+            hist = self.sold[self.sold['referance'] == reference]
+            if (hist['cond2'] == 'Unworn').sum() == 0:
+                cap = float(hist['soldPrice_raw'].max()) * 1.15
+                if fair > cap:
+                    notes.append(
+                        f"حد أمان: لا بيعات غير مستخدمة لهذا المرجع — "
+                        f"قُصّ التقييم عند أعلى سعر تاريخي ×1.15 ({round(cap):,})")
+                    fair = cap
+                    hi = min(hi, cap)
+                    lo = min(lo, fair)
+
         base = round(baseline)
         base_year = ref_year
 
@@ -484,7 +563,7 @@ class WatchValuationEngine:
             'لون الميناء': _mode('dialColor'),
             'المعدن': _mode('metal'),
             'نوع السوار': _mode('braceletMaterial'),
-            'سعر التجزئة الرسمي': (f"€{round(float(retail)):,}" if retail else None),
+            'سعر التجزئة الرسمي (يورو)': (f"€{round(float(retail)):,}" if retail else None),
         }
         specs = {k: str(v) for k, v in specs.items() if v not in (None, '', 'nan')}
 
@@ -500,7 +579,7 @@ class WatchValuationEngine:
             f"هو حوالي {round(fair):,} دينار كويتي، "
             f"محسوب من أحدث الصفقات (مع إعطاء الأقرب زمنياً وزناً أكبر)، "
             f"ضمن سجل من {len(comps):,} صفقة لهذا الموديل يمنح ثقة "
-            f"{self._conf(len(pool), len(comps))} بالتقييم."
+            f"{self._conf(len(pool), len(comps), pool_age_days)} بالتقييم."
         )
         # القفزة
         if jump is not None:
@@ -551,7 +630,13 @@ class WatchValuationEngine:
             'discontinued_year': disc_year,
             'discontinued_reason': disc_reason,
             'estimated': estimated,
-            'confidence': 'منخفضة' if estimated else self._conf(len(pool), len(comps)),
+            'confidence': ('منخفضة' if estimated
+                           else self._conf(len(pool), len(comps), pool_age_days)),
+            # تشخيص جودة العينة: حجم العينة الفعّال، عمر أحدث بيعة بالعينة،
+            # وحصة أثقل بيعة من إجمالي الوزن
+            'ess': round(ess, 1),
+            'data_age_days': pool_age_days,
+            'top_w_share': round(top_w_share, 3),
             'narrative': narrative,
             'recent_sales': recent_sales,
             'recent_all': recent_all,

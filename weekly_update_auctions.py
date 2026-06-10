@@ -400,10 +400,25 @@ def main():
         w("\n✓ اكتمل — ما فيه صفوف جديدة.")
         _cleanup(); log.close(); return
 
-    new_rows = []
+    # حارس الدمج: لا نضيف أي awid موجود أصلاً بالماستر (أو مكرر داخل الملف المؤقت).
+    # بدونه: لو انقطع التشغيل بعد الدمج وقبل التنظيف، التشغيل التالي يعيد إضافة
+    # نفس الصفوف (حدث فعلياً: 107 ساعة انضافت 3 مرات في مزادات 5258-5261).
+    merged_awids = {str(r.get("auctionWatchId", "")).strip() for r in all_rows}
+    new_rows, skipped_dup = [], 0
     with open(NEWROWS_FILE, encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
+            awid = str(r.get("auctionWatchId", "")).strip()
+            if awid and awid in merged_awids:
+                skipped_dup += 1
+                continue
+            if awid:
+                merged_awids.add(awid)
             new_rows.append(r)
+    if skipped_dup:
+        w(f"   ⚠️ تخطّينا {skipped_dup} صف مكرر (awid موجود أصلاً).")
+    if not new_rows:
+        w("\n✓ اكتمل — كل الصفوف الجديدة كانت مكررة، ما انضاف شي.")
+        _cleanup(); log.close(); return
 
     backup = MASTER_CSV.replace(".csv", f"_backup_{datetime.now():%Y%m%d}.csv")
     shutil.copy2(MASTER_CSV, backup)
