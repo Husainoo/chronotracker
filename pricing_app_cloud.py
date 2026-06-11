@@ -944,6 +944,22 @@ function pickYear(ev, y){
   loadResult();
 }
 
+// «قبل X يوم/شهر» بصياغة عربية طبيعية لعمر أحدث بيعة في عينة التقييم
+function ageText(days){
+  if(days==null) return '';
+  if(days<1)   return 'اليوم';
+  if(days===1) return 'قبل يوم';
+  if(days===2) return 'قبل يومين';
+  if(days<=10) return 'قبل '+days+' أيام';
+  if(days<=45) return 'قبل '+days+' يوم';
+  const m=Math.round(days/30);
+  if(m===2)  return 'قبل شهرين';
+  if(m<=10)  return 'قبل '+m+' أشهر';
+  if(days<365) return 'قبل '+m+' شهر';
+  if(days<730) return 'قبل أكثر من سنة';
+  return 'قبل أكثر من سنتين';
+}
+
 function render(d, yearRows){
   const out = $('out');
   const hs=$('hotSec'); if(hs) hs.style.display='none';
@@ -1162,6 +1178,7 @@ function render(d, yearRows){
           <div style="font-size:13px;font-weight:700;color:#f5a3a3;font-family:'Space Mono',monospace">فوق ${fmt(d.high)}</div>
         </div>
       </div>
+      <div style="text-align:center;font-size:10.5px;color:var(--muted);margin-top:8px">النطاق الواقعي (~85%) — مُعايَر على دقة التقييمات السابقة فعلياً</div>
     </div>`);
   out.innerHTML = `
     <div style="display:flex;justify-content:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
@@ -1178,6 +1195,7 @@ function render(d, yearRows){
     </div>
     ${reBar}
     ${priceSection}
+    ${d.data_age_days==null?'':`<div style="text-align:center;font-size:11.5px;margin-top:10px;color:${d.data_age_days>365?'#ecc964':'var(--muted)'}">${d.data_age_days>365?'⚠️ ':''}آخر بيعة بالعينة ${ageText(d.data_age_days)}</div>`}
     ${marketHtml?SD+marketHtml:''}
     ${salesYear?SD+salesYear:''}
     ${specs?SD+specs:''}

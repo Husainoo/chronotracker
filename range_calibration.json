@@ -1,0 +1,22 @@
+{
+ "target_coverage": 0.85,
+ "method": "quantiles [7.5, 92.5] of actual/fair on holdout backtest",
+ "n_holdouts": 1117,
+ "tiers": {
+  "reliable": {
+   "rlo": 0.8351761764767482,
+   "rhi": 1.1437107882377076,
+   "n": 528
+  },
+  "medium": {
+   "rlo": 0.8351761764767482,
+   "rhi": 1.1763276588090315,
+   "n": 282
+  },
+  "wide": {
+   "rlo": 0.812680304222397,
+   "rhi": 1.3074392209248185,
+   "n": 307
+  }
+ }
+}

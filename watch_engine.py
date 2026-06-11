@@ -78,6 +78,25 @@ class WatchValuationEngine:
                             self.discontinued_reason[p] = str(row.get('reason', '') or '').strip()
         except Exception:
             self.discontinued = {}
+        # معايرة النطاق (~85%): كميات [7.5%, 92.5%] لنسبة (الفعلي/المتوقع) من
+        # backtest.py حسب شريحة الثقة. القيم الافتراضية من معايرة 2026-06-12
+        # (n=1117 حجباً)؛ ملف range_calibration.json يحدّثها لو وُجد.
+        self.range_cal = {
+            'reliable': {'rlo': 0.8352, 'rhi': 1.1437},
+            'medium':   {'rlo': 0.8352, 'rhi': 1.1763},
+            'wide':     {'rlo': 0.8127, 'rhi': 1.3074},
+        }
+        try:
+            import json as _json, os as _os
+            if _os.path.exists('range_calibration.json'):
+                with open('range_calibration.json', encoding='utf-8') as f:
+                    t = _json.load(f).get('tiers', {})
+                for k in self.range_cal:
+                    if k in t:
+                        self.range_cal[k] = {'rlo': float(t[k]['rlo']),
+                                             'rhi': float(t[k]['rhi'])}
+        except Exception:
+            pass
 
     def discontinued_info(self, reference):
         """يرجّع (سنة التوقف، السبب) لو معروف، وإلا (None, None)."""
@@ -426,6 +445,27 @@ class WatchValuationEngine:
                     hi = min(hi, cap)
                     lo = min(lo, fair)
 
+        # علم «بيانات غير كافية» يبقى على منطق النطاق الخام القديم (الربيعان)
+        insufficient = bool(round(lo) >= round(hi))
+
+        # --- النطاق المُعايَر (~85%) — يحل محل الربيعين في المخرجات ---
+        # الربيعان كانا يغطيان السعر الفعلي ~37% فقط (مضلل بالضيق). البديل:
+        # نطاق تنبؤ من توزيع أخطاء الـ backtest الفعلية حسب شريحة الثقة
+        # (نفس تعريف الشرائح في backtest.py — أي تغيير لازم يطابَق هناك):
+        #   reliable: غير تقديري، ESS≥4، أحدث بيعة ≤ سنة
+        #   medium  : غير تقديري، ESS<4، أحدث بيعة ≤ سنة
+        #   wide    : تقديري، أو بيانات أقدم من سنة، أو مرجع أرقّ من شمول
+        #             الـ backtest (<6 بيعات) → أعرض شريحة
+        if estimated or len(comps) < 6 or pool_age_days > 365:
+            range_tier = 'wide'
+        elif ess >= 4:
+            range_tier = 'reliable'
+        else:
+            range_tier = 'medium'
+        rc = self.range_cal[range_tier]
+        lo = fair * rc['rlo']
+        hi = fair * rc['rhi']
+
         base = round(baseline)
         base_year = ref_year
 
@@ -618,8 +658,9 @@ class WatchValuationEngine:
             'reference': reference, 'year': year, 'condition': condition,
             'full_set': full_set,
             'fair': round(fair), 'low': round(lo), 'high': round(hi),
-            # بيانات غير كافية: النطاق منهار (يحدث فقط للمراجع شبه-الفارغة ≤2 بيعة)
-            'insufficient': bool(round(lo) >= round(hi)),
+            # بيانات غير كافية: النطاق الخام منهار (مراجع شبه-فارغة ≤2 بيعة)
+            'insufficient': insufficient,
+            'range_tier': range_tier,
             'n_sold': len(comps), 'n_recent': len(pool),
             'base': round(base), 'base_year': int(base_year),
             'adjustments': notes, 'demand': demand,

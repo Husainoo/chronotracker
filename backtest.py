@@ -57,7 +57,11 @@ def main():
                      'fair': r['fair'], 'low': r['low'], 'high': r['high'],
                      'ape_engine': abs(r['fair'] - actual) / actual,
                      'ape_naive': abs(naive - actual) / actual,
-                     'in_range': r['low'] <= actual <= r['high']})
+                     'in_range': r['low'] <= actual <= r['high'],
+                     # للمعايرة: النسبة الموقّعة فعلي/متوقع + تشخيص جودة العينة
+                     'ratio': actual / r['fair'] if r['fair'] else np.nan,
+                     'ess': r.get('ess'), 'age': r.get('data_age_days'),
+                     'estimated': bool(r.get('estimated'))})
     eng.sold = full_sold
     eng.ref_date = full_ref_date
     bt = pd.DataFrame([x for x in rows if 'error' not in x])
@@ -74,6 +78,44 @@ def main():
     if errs:
         for x in errs[:5]:
             print("  ⚠️", x['ref'], x['error'])
+
+    # ---------- 1ب) معايرة النطاق: كميات الانحرافات الموقّعة لكل شريحة ثقة ----------
+    # النطاق المستهدف ~85%: [7.5%, 92.5%] من نسبة (الفعلي/المتوقع) في كل شريحة.
+    # الشرائح نفسها المطبقة في watch_engine.evaluate — أي تغيير هنا لازم يطابقه هناك.
+    import json
+    cal = bt[bt['ratio'].notna()].copy()
+
+    def tier_of(row):
+        if row['estimated'] or row['n'] < 6 or row['age'] > 365:
+            return 'wide'
+        return 'reliable' if row['ess'] >= 4 else 'medium'
+
+    cal['tier'] = cal.apply(tier_of, axis=1)
+    tiers = {}
+    for t in ('reliable', 'medium', 'wide'):
+        d = cal[cal['tier'] == t]['ratio']
+        rlo, rhi = np.percentile(d, [7.5, 92.5])
+        tiers[t] = {'rlo': float(rlo), 'rhi': float(rhi), 'n': int(len(d))}
+    # فرض الاتساع الرتيب: الشريحة الأوسع تحتوي الأضيق (يمنع انقلابات ضوضاء الكميات)
+    for prev, cur in (('reliable', 'medium'), ('medium', 'wide')):
+        tiers[cur]['rlo'] = min(tiers[cur]['rlo'], tiers[prev]['rlo'])
+        tiers[cur]['rhi'] = max(tiers[cur]['rhi'], tiers[prev]['rhi'])
+    out = {'target_coverage': 0.85,
+           'method': 'quantiles [7.5, 92.5] of actual/fair on holdout backtest',
+           'n_holdouts': int(len(cal)),
+           'tiers': tiers}
+    with open('range_calibration.json', 'w', encoding='utf-8') as f:
+        json.dump(out, f, ensure_ascii=False, indent=1)
+
+    print("\n== معايرة النطاق (~85%) — كُتبت في range_calibration.json ==")
+    total_in = 0
+    for t in ('reliable', 'medium', 'wide'):
+        d = cal[cal['tier'] == t]
+        inr = ((d['ratio'] >= tiers[t]['rlo']) & (d['ratio'] <= tiers[t]['rhi']))
+        total_in += int(inr.sum())
+        print(f"  {t:9s}: n={len(d):4d} | [{tiers[t]['rlo']:.3f}, {tiers[t]['rhi']:.3f}] "
+              f"| عرض {100*(tiers[t]['rhi']-tiers[t]['rlo']):.0f}% | تغطية {100*inr.mean():.1f}%")
+    print(f"  الإجمالي : تغطية {100*total_in/len(cal):.1f}%")
 
     # ---------- 2) تركّز الأوزان وجودة العينة على كل المراجع ----------
     diag = []

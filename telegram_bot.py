@@ -136,7 +136,7 @@ def evaluate_watch(reference: str, year: int = 2020, condition: str = "Pre-owned
 📊 تقييم {result['reference']}
 {'='*40}
 💰 السعر العادل: {result['fair']:,.0f} د.ك
-📈 النطاق: {result['low']:,.0f} — {result['high']:,.0f} د.ك
+📈 النطاق الواقعي (~85%): {result['low']:,.0f} — {result['high']:,.0f} د.ك
 🎯 الثقة: {result['confidence']}
 📅 آخر بيعة: {last_sale_txt}
 🔄 الاتجاه: {trend_txt}
