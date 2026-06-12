@@ -1129,6 +1129,10 @@ function render(d, yearRows){
   const estBadge = d.estimated
     ? `<div style="margin:10px auto 0;max-width:420px;display:flex;align-items:center;justify-content:center;gap:7px;padding:7px 12px;border-radius:10px;background:rgba(201,162,39,.13);border:1px solid rgba(201,162,39,.4);color:#e8c860;font-size:12px;font-weight:600;text-align:center">🔶 تقديري — لا توجد بيعات لنفس الحالة بهذه السنة؛ مبني على نفس الحالة عبر كل السنوات (ثقة منخفضة)</div>`
     : '';
+  // استعارة من المراجع الشقيقة (مرجع رقيق سُعّر من مستوى جذعه) — سطر شفافية صغير
+  const sibLine = (d.sibling_estimated && d.sibling_info)
+    ? `<div style="text-align:center;font-size:11.5px;color:var(--muted);margin-top:8px">🧩 تقدير بالاستعانة بالمراجع الشقيقة (${fmt(d.sibling_info.n_sib_sales)} بيعة من ${fmt(d.sibling_info.n_sib_refs)} مرجع)</div>`
+    : '';
   // بيانات غير كافية (نطاق منهار) — نعرض رسالة صادقة + البيعات الفعلية بدل رقم وهمي
   const _sold = (d.recent_all||[]).filter(x=>x.sold);
   const _salesRows = _sold.slice(0,8).map(x=>`
@@ -1164,6 +1168,7 @@ function render(d, yearRows){
       <div class="lbl">السعر المقترح</div>
       <div class="val">${fmt(d.fair)} <small>KWD</small></div>
       ${estBadge}
+      ${sibLine}
       <div style="display:flex;border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,.1);max-width:420px;margin:14px auto 0">
         <div style="flex:1;background:rgba(63,178,127,.15);padding:9px 6px;text-align:center;border-left:1px solid rgba(255,255,255,.08)">
           <div style="font-size:10px;color:#5dcaa5;margin-bottom:3px;font-weight:600">✅ صفقة</div>

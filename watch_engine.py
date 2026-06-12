@@ -3,6 +3,7 @@
 يقدّر السعر العادل لأي ساعة بناءً على المبيعات الفعلية،
 ويفهم تأثير السنة والحالة والـ Full Set، ويقرأ إشارات العروض غير المباعة.
 """
+import re
 import pandas as pd
 import numpy as np
 
@@ -65,6 +66,9 @@ class WatchValuationEngine:
         self._coef_cache = {}
         # general fallback coefficients (all brands)
         self._general = self._fit(self.sold)
+        # تجميع الأشقاء (نفس الساعة بقرص مختلف) + إحصاءات الاستعارة
+        self._build_sibling_groups()
+        self._build_sibling_stats()
         # تحميل قائمة الموديلات المتوقفة (لتمييز سنوات الصنع المستحيلة)
         self.discontinued = {}
         self.discontinued_reason = {}
@@ -87,6 +91,11 @@ class WatchValuationEngine:
             'reliable': {'rlo': 0.8264, 'rhi': 1.1298},
             'medium':   {'rlo': 0.8264, 'rhi': 1.1603},
             'wide':     {'rlo': 0.8264, 'rhi': 1.2889},
+            # شريحة الاستعارة من الأشقاء — تُعايَر من sibling_backtest.py
+            # (محاكاة حجب البيعات) في sibling_calibration.json، منفصلة عن
+            # range_calibration.json حتى يبقى backtest.py القياسي بلا أي تغيير.
+            # افتراضي = معايرة 2026-06-12 (50,429 بيعة مخفية من 391 مرجعاً)
+            'sibling':  {'rlo': 0.8487, 'rhi': 1.1973},
         }
         try:
             import json as _json, os as _os
@@ -97,6 +106,11 @@ class WatchValuationEngine:
                     if k in t:
                         self.range_cal[k] = {'rlo': float(t[k]['rlo']),
                                              'rhi': float(t[k]['rhi'])}
+            if _os.path.exists('sibling_calibration.json'):
+                with open('sibling_calibration.json', encoding='utf-8') as f:
+                    sc = _json.load(f)
+                self.range_cal['sibling'] = {'rlo': float(sc['rlo']),
+                                             'rhi': float(sc['rhi'])}
         except Exception:
             pass
 
@@ -230,6 +244,197 @@ class WatchValuationEngine:
             c = self._fit(self.sold[self.sold['brand'] == brand])
             self._coef_cache[brand] = c if c else self._general
         return self._coef_cache[brand]
+
+    # ===== الاستعارة من المراجع الشقيقة (للمراجع الرقيقة فقط) =====
+    # جذع المرجع = ما قبل لاحقة «-dddd» (نمط رولكس الحديث: 126710BLRO-0001).
+    # متحفظ عمداً: أي شكل لاحقة آخر لا يُجمَع، والجذع يُرفض لو اختلف أعضاؤه
+    # في الماركة/الموديل أو تعارضت حقولهم المهيكلة (المقاس/المعدن).
+    SIB_SUFFIX = re.compile(r'^(.+?)-(\d{4})$')
+    SIB_MIN_POOL = 5      # أدنى بيعات أشقاء لاعتماد مستوى الجذع
+    # حارس «النادر»: |متوسط log(سعر المرجع ÷ مستوى جذعه)| فوق هذا الحد →
+    # قرص نادر/إصدار خاص: لا يُسعَّر من جذعه ولا يدخل بمستوى الجذع لإخوته.
+    # 0.56 ≈ ×1.75: يعادل ~2.4σ من التشتت المجمّع لنسبة بيعة واحدة
+    # (sqrt(tau²+sigma²) ≈ 0.235 بمعايرة 2026-06-12)، ويسِم ~3.6% فقط من
+    # أعضاء الجذوع (31/865) — يلتقط الشواذ الحقيقية (مثل 134300-0010
+    # المُباع بـ×2.8 من مستوى جذعه) دون ابتلاع ضوضاء البيعة الواحدة.
+    SIB_RARE_LOG = 0.56
+    # «رقيق» = إجمالي بيعات المرجع ≤ هذا الحد (إضافة لعلم insufficient).
+    # بدونه كانت الاستعارة تلتقط مراجع سائلة (6-9 بيعات) ينهار ربيعا
+    # مسار «نفس السنة» عندها في استعلام سنة محددة — فتغيّر نتائج backtest
+    # القياسي (مرجعه ≥6 بيعات → ≥5 ظاهرة بعد الحجب، فالحد 4 يعزله تماماً).
+    # عملياً لا يضيّق شيئاً: كل الـ185 مرجعاً المستفيدة لها بيعة واحدة.
+    SIB_MAX_OWN = 4
+
+    def _build_sibling_groups(self):
+        """يبني خرائط الجذوع: ref_stem (مرجع→جذع) وstem_refs (جذع→مراجعه).
+        يقبل الجذع فقط لو كل أعضائه بنفس الماركة والموديل وبلا تعارض
+        بالمقاس/المعدن (القيم الأكثر تكراراً لكل مرجع من كامل الإدراجات)."""
+        self.ref_stem, self.stem_refs = {}, {}
+        cand = {}
+        for ref in self.sold['referance'].unique():
+            m = self.SIB_SUFFIX.match(str(ref))
+            if m:
+                cand.setdefault(m.group(1), []).append(ref)
+        cand = {k: v for k, v in cand.items() if len(v) >= 2}
+        if not cand:
+            return
+        allrefs = [r for v in cand.values() for r in v]
+        sub = self.df[self.df['referance'].isin(allrefs)]
+        info = {}
+        for c in ('brand', 'model', 'size', 'metal'):
+            info[c] = sub.groupby('referance', observed=True)[c].agg(
+                lambda v: (v.dropna().mode().iloc[0]
+                           if len(v.dropna().mode()) else None))
+        for stem, rr in cand.items():
+            consistent = True
+            for c in ('brand', 'model', 'size', 'metal'):
+                vals = {info[c].get(r) for r in rr}
+                vals = {str(v).strip() for v in vals
+                        if v is not None and str(v) != 'nan'}
+                if len(vals) > 1:
+                    consistent = False
+                    break
+            if consistent:
+                self.stem_refs[stem] = rr
+                for r in rr:
+                    self.ref_stem[r] = stem
+
+    def _sib_norm(self, rows, coefs, ref_year, brand):
+        """سعر كل بيعة مقوَّماً زمنياً بمؤشر السوق ومطبَّعاً للمواصفات
+        (سنة/حالة/طقم) — نفس عوامل evaluate لكن متجهياً."""
+        p = rows['soldPrice'].astype('float64').to_numpy()
+        p = p * self._mkt_factor(brand, rows['priceDate'])
+        yr = rows['year'].to_numpy(dtype='float64')
+        yr = np.where(np.isfinite(yr), yr, float(ref_year))
+        d = np.clip(yr - float(ref_year), -25.0, 25.0)
+        f = np.exp(coefs['yr'] * d)
+        f = f * np.where(rows['cond2'].astype(str).to_numpy() == 'Unworn',
+                         np.exp(coefs['unworn']), 1.0)
+        f = f * np.where(rows['fs'].astype(str).to_numpy() == 'Full',
+                         np.exp(coefs['full']), 1.0)
+        return p / f
+
+    def _stem_level(self, reference, exclude_rare=True):
+        """مستوى الجذع «بنقود اليوم» من بيعات الأشقاء — بلا المرجع نفسه
+        وبلا الأشقاء النادرين. يرجع dict أو None لو الأشقاء < SIB_MIN_POOL.
+        يقرأ self.sold الحالي دائماً (آمن مع حجب الـ backtest/المحاكاة)."""
+        stem = self.ref_stem.get(reference)
+        if stem is None:
+            return None
+        sibs = [r for r in self.stem_refs[stem] if r != reference
+                and not (exclude_rare and r in self.rare_refs)]
+        pool = self.sold[self.sold['referance'].isin(sibs)]
+        if len(pool) < self.SIB_MIN_POOL:
+            return None
+        bm = pool['brand'].dropna().mode()
+        brand = bm.iloc[0] if len(bm) else ''
+        coefs = self._coefs(brand)
+        ref_year = (int(np.median(pool['year'].dropna()))
+                    if pool['year'].notna().any() else 2022)
+        norm = self._sib_norm(pool, coefs, ref_year, brand)
+        days = (self.ref_date - pool['priceDate']).dt.days.values
+        hl = 75.0
+        w = 0.5 ** (days / hl)
+
+        def _e(w_):
+            s2 = float((w_ * w_).sum())
+            return float(w_.sum()) ** 2 / s2 if w_.size and s2 > 0 else 0.0
+
+        while _e(w) < 3 and hl < 1200:
+            hl *= 2
+            w = 0.5 ** (days / hl)
+        return {'stem': stem, 'baseline': self._wmedian(norm, w),
+                'coefs': coefs, 'ref_year': ref_year, 'brand': brand,
+                'n_sales': int(len(pool)),
+                'n_refs': int(pool['referance'].nunique())}
+
+    def _sib_ratio_raw(self, reference, lvl):
+        """متوسط log(بيعات المرجع المقوَّمة ÷ مستوى جذعه) وعددها.
+        يقيس «فرق هذا القرص» عن مستوى الجذع وقت كل بيعة (المؤشر يقوّم
+        البيعة واليوم لنفس النقود فالنسبة زمنياً عادلة)."""
+        base = lvl['baseline']
+        if not np.isfinite(base) or base <= 0:
+            return None, 0
+        own = self.sold[self.sold['referance'] == reference]
+        if len(own) == 0:
+            return None, 0
+        norm = self._sib_norm(own, lvl['coefs'], lvl['ref_year'], lvl['brand'])
+        norm = norm[np.isfinite(norm) & (norm > 0)]
+        if norm.size == 0:
+            return None, 0
+        return float(np.log(norm / base).mean()), int(norm.size)
+
+    def _build_sibling_stats(self):
+        """تقدير معاملي الانكماش (Empirical Bayes) من الجذوع نفسها:
+        sigma² = تباين البيعات داخل المرجع الواحد (ضوضاء البيعة)،
+        tau²   = تباين «فرق القرص» الحقيقي بين الأشقاء (بعد خصم الضوضاء).
+        كما يَسِم النادرين (|log ratio| > SIB_RARE_LOG) فيُستثنون من
+        مستويات الجذوع لإخوتهم. يُحسب مرة عند الإقلاع من كامل البيانات."""
+        self.rare_refs = set()
+        # قيم احتياطية (معايرة 2026-06-12 على 865 مرجعاً داخل جذوع)
+        self._sib_sigma2, self._sib_tau2 = 0.0070, 0.0316
+        # لا نلوّث كاش المعاملات: الـ backtest يبدّل self.sold ويعتمد أن
+        # المعاملات تُحسب كسولاً من بيانات الحجب — ملء الكاش هنا (من البيانات
+        # الكاملة) كان يغيّر نتائجه بفروق ±1-3 د.ك. نحفظه ونرجّعه بالنهاية.
+        _saved_cache = dict(self._coef_cache)
+        means, sig_w, sig_v = [], [], []
+        for stem, rr in self.stem_refs.items():
+            for ref in rr:
+                lvl = self._stem_level(ref, exclude_rare=False)
+                if lvl is None:
+                    continue
+                raw, n = self._sib_ratio_raw(ref, lvl)
+                if raw is None:
+                    continue
+                if abs(raw) > self.SIB_RARE_LOG:
+                    self.rare_refs.add(ref)
+                    continue
+                means.append((raw, n))
+                if n >= 3:
+                    own = self.sold[self.sold['referance'] == ref]
+                    v = np.log(self._sib_norm(own, lvl['coefs'],
+                                              lvl['ref_year'], lvl['brand']))
+                    v = v[np.isfinite(v)]
+                    if v.size >= 3:
+                        sig_w.append(v.size - 1)
+                        sig_v.append(float(np.var(v, ddof=1)))
+        if sig_w:
+            self._sib_sigma2 = float(np.average(sig_v, weights=sig_w))
+        well = [(m, n) for m, n in means if n >= 3]
+        if len(well) >= 30:
+            mv = np.array([m for m, _ in well])
+            nv = np.array([n for _, n in well], dtype=float)
+            self._sib_tau2 = float(max(np.var(mv, ddof=1)
+                                       - np.mean(self._sib_sigma2 / nv), 1e-4))
+        self._coef_cache = _saved_cache
+
+    def _sibling_estimate(self, reference, year=None, condition='Pre-owned',
+                          full_set=True):
+        """تقدير المرجع الرقيق بالاستعارة: مستوى الجذع × معامل فرق القرص
+        المنكمش نحو 1 بقدر قلة بياناته. يرجع dict أو None لو لا جذع/أشقاء
+        كافين، أو {'rare': True} لو المرجع انحرف فوق عتبة النادر."""
+        lvl = self._stem_level(reference)
+        if lvl is None or not np.isfinite(lvl['baseline']) or lvl['baseline'] <= 0:
+            return None
+        raw, n_own = self._sib_ratio_raw(reference, lvl)
+        if raw is None:
+            return None
+        if abs(raw) > self.SIB_RARE_LOG:
+            return {'rare': True}
+        shr = self._sib_tau2 / (self._sib_tau2 + self._sib_sigma2 / max(n_own, 1))
+        ratio = float(np.exp(shr * raw))
+        c2, ry2 = lvl['coefs'], lvl['ref_year']
+        d2 = max(-25.0, min(25.0, float(year if year else ry2) - ry2))
+        tgt = float(np.exp(c2['yr'] * d2))
+        if condition == 'Unworn':
+            tgt *= float(np.exp(c2['unworn']))
+        if full_set:
+            tgt *= float(np.exp(c2['full']))
+        return {'rare': False, 'fair': float(lvl['baseline'] * ratio * tgt),
+                'norm_fair': float(lvl['baseline'] * ratio),
+                'stem': lvl['stem'], 'n_sib_sales': lvl['n_sales'],
+                'n_sib_refs': lvl['n_refs'], 'ratio': ratio,
+                'raw_log_ratio': raw, 'n_own': n_own}
 
     @staticmethod
     def _wmedian(vals, w):
@@ -534,6 +739,33 @@ class WatchValuationEngine:
         # علم «بيانات غير كافية» يبقى على منطق النطاق الخام القديم (الربيعان)
         insufficient = bool(round(lo) >= round(hi))
 
+        # --- الاستعارة من الأشقاء: تعمل حصراً عند insufficient (عينة ذاتية
+        # تحت حد الكفاية الحالي) — المراجع ذات البيانات الكافية لا تمسّ ---
+        sibling_estimated, rare_variant, sibling_info = False, False, None
+        n_own_total = int((self.sold['referance'] == reference).sum())
+        if (insufficient and n_own_total <= self.SIB_MAX_OWN
+                and reference in self.ref_stem):
+            sib = self._sibling_estimate(reference, year=year,
+                                         condition=condition, full_set=full_set)
+            if sib is not None and sib.get('rare'):
+                # قرص نادر/إصدار خاص: بيعاته تنحرف بشدة عن جذعه —
+                # لا نفرض عليه سعر الجذع، يبقى على سلوكه الحالي
+                rare_variant = True
+            elif sib is not None:
+                fair = sib['fair']
+                insufficient = False
+                sibling_estimated = True
+                sibling_info = {'stem': sib['stem'],
+                                'n_sib_sales': sib['n_sib_sales'],
+                                'n_sib_refs': sib['n_sib_refs'],
+                                'ratio': round(sib['ratio'], 3),
+                                'n_own': sib['n_own']}
+                notes.append(
+                    f"استعارة من الأشقاء: مستوى الجذع {sib['stem']} "
+                    f"({sib['n_sib_sales']} بيعة من {sib['n_sib_refs']} مرجع شقيق) "
+                    f"× معامل فرق المرجع {sib['ratio']:.2f} "
+                    f"(مُقدَّر من {sib['n_own']} بيعة ذاتية، منكمش نحو 1)")
+
         # --- النطاق المُعايَر (~85%) — يحل محل الربيعين في المخرجات ---
         # الربيعان كانا يغطيان السعر الفعلي ~37% فقط (مضلل بالضيق). البديل:
         # نطاق تنبؤ من توزيع أخطاء الـ backtest الفعلية حسب شريحة الثقة
@@ -542,7 +774,10 @@ class WatchValuationEngine:
         #   medium  : غير تقديري، ESS<4، أحدث بيعة ≤ سنة
         #   wide    : تقديري، أو بيانات أقدم من سنة، أو مرجع أرقّ من شمول
         #             الـ backtest (<6 بيعات) → أعرض شريحة
-        if estimated or len(comps) < 6 or pool_age_days > 365:
+        #   sibling : استعارة من الأشقاء — معايرتها من sibling_backtest.py
+        if sibling_estimated:
+            range_tier = 'sibling'
+        elif estimated or len(comps) < 6 or pool_age_days > 365:
             range_tier = 'wide'
         elif ess >= 4:
             range_tier = 'reliable'
@@ -746,6 +981,11 @@ class WatchValuationEngine:
             'fair': round(fair), 'low': round(lo), 'high': round(hi),
             # بيانات غير كافية: النطاق الخام منهار (مراجع شبه-فارغة ≤2 بيعة)
             'insufficient': insufficient,
+            # استعارة من الأشقاء: المرجع رقيق وسُعّر من مستوى جذعه
+            'sibling_estimated': sibling_estimated,
+            'sibling_info': sibling_info,
+            # قرص نادر/إصدار خاص: انحرف عن جذعه فلم تُفرض عليه الاستعارة
+            'rare_variant': rare_variant,
             'range_tier': range_tier,
             'n_sold': len(comps), 'n_recent': len(pool),
             'base': round(base), 'base_year': int(base_year),
