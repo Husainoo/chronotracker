@@ -6,7 +6,9 @@ services:
   - type: web
     name: chronotracker-web
     runtime: python
-    plan: free
+    # starter (مطابق للترقية اليدوية في اللوحة) — لو بقيت free هنا، كل مزامنة
+    # Blueprint تطلق "Instance type updated" وتعيد النشر وتنزّل الخطة.
+    plan: starter
     buildCommand: pip install -r requirements.txt
     # gunicorn بدل خادم http.server أحادي الخيط: عامل واحد (حفاظاً على الذاكرة؛
     # المحرك يُحمَّل مرة في الـ master مع --preload) + 4 خيوط حتى لا يجمّد

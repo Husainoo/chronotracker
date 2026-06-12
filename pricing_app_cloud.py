@@ -328,9 +328,16 @@ def latest_sales(limit=500):
     return out
 
 
+import functools
+
+
+@functools.lru_cache(maxsize=2048)
 def years_table(ref, condition='Pre-owned', full_set=True):
     """جدول كل السنوات لهالمرجع: لكل سنة عندها بيانات → السعر المقترح + عدد المبيعات
-    + هل تقديري. يستدعي نفس evaluate لكل سنة فالرقم مطابق تماماً للاختيار المفرد."""
+    + هل تقديري. يستدعي نفس evaluate لكل سنة فالرقم مطابق تماماً للاختيار المفرد.
+    مكيّش بالمفتاح (ref, condition, full_set): أثقل مسار (~185-323ms محلياً،
+    ~2-3s على Render) وبياناته ثابتة طوال عمر العملية (تتغير بإعادة النشر فقط)
+    والمستدعي لا يعدّل الناتج (jdumps فقط) — فالكاش آمن بلا إبطال."""
     s = ENGINE.sold
     comps = s[s['referance'] == ref]
     if len(comps) == 0:
