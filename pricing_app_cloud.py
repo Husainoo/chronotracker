@@ -2440,6 +2440,61 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 
 # ========================
+# WSGI (gunicorn) — التطبيق ليس Flask؛ هذا محوّل رقيق يعيد استخدام
+# RequestHandler نفسه حرفياً بلا سوكيت TCP. المسارات لا تقرأ من الطلب إلا
+# path / headers['Cookie'] / headers['Content-Length'] / rfile، ولا تكتب
+# إلا عبر send_response/send_header/end_headers/wfile — كلها مزوّدة هنا.
+# ========================
+import io as _io
+
+
+class _WSGIHandler(RequestHandler):
+    def __init__(self, environ):           # بلا super().__init__ — لا سوكيت
+        self.command = environ.get('REQUEST_METHOD', 'GET')
+        self.path = environ.get('PATH_INFO', '/') or '/'
+        q = environ.get('QUERY_STRING', '')
+        if q:
+            self.path += '?' + q
+        self.request_version = 'HTTP/1.1'
+        self.headers = {
+            'Cookie': environ.get('HTTP_COOKIE', ''),
+            'Content-Length': environ.get('CONTENT_LENGTH') or '0',
+        }
+        self.rfile = environ.get('wsgi.input') or _io.BytesIO()
+        self.wfile = _io.BytesIO()
+        self.wsgi_status = '200 OK'
+        self.wsgi_headers = []
+
+    def send_response(self, code, message=None):
+        msg = message or self.responses.get(code, ('',))[0]
+        self.wsgi_status = f'{code} {msg}'
+
+    def send_header(self, key, value):
+        self.wsgi_headers.append((key, value))
+
+    def end_headers(self):
+        pass
+
+
+def app(environ, start_response):
+    """نقطة دخول gunicorn:  gunicorn pricing_app_cloud:app"""
+    h = _WSGIHandler(environ)
+    try:
+        if h.command == 'POST':
+            h.do_POST()
+        elif h.command in ('GET', 'HEAD'):
+            h.do_GET()
+        else:
+            h._send(405, jdumps({'error': 'method not allowed'}))
+    except Exception as e:
+        h.wsgi_status = '500 Internal Server Error'
+        h.wsgi_headers = [('Content-Type', 'application/json; charset=utf-8')]
+        h.wfile = _io.BytesIO(jdumps({'ok': False, 'msg': str(e)}).encode('utf-8'))
+    start_response(h.wsgi_status, h.wsgi_headers)
+    return [b''] if h.command == 'HEAD' else [h.wfile.getvalue()]
+
+
+# ========================
 # Main
 # ========================
 if __name__ == '__main__':
@@ -2458,3 +2513,7 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print("\n\nإيقاف الخادم...")
         server.shutdown()
+else:
+    # استيراد عبر gunicorn (--preload): التحميل الكامل مرة واحدة في الـ master
+    # قبل تفريع العمال — الذاكرة تُشارَك بينهم (COW) والعمال يولدون جاهزين.
+    boot()

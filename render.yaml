@@ -8,7 +8,10 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python pricing_app_cloud.py
+    # gunicorn بدل خادم http.server أحادي الخيط: عامل واحد (حفاظاً على الذاكرة؛
+    # المحرك يُحمَّل مرة في الـ master مع --preload) + 4 خيوط حتى لا يجمّد
+    # طلب بطيء فحص Render الصحي. التطبيق يصدّر WSGI app (محوّل فوق المعالج).
+    startCommand: gunicorn pricing_app_cloud:app --workers 1 --threads 4 --timeout 120 --preload --bind 0.0.0.0:$PORT
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
