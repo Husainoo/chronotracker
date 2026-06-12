@@ -231,6 +231,11 @@ def boot():
         MARKET = build_market_overview()
     except Exception:
         MARKET = {}
+    # مؤشر اتجاه السوق (عرض سلسلة المحرك الجاهزة — انظر build_trend_index)
+    try:
+        MARKET['trend_index'] = build_trend_index()
+    except Exception:
+        MARKET['trend_index'] = None
 
     print(f"✓ جاهز — {len(ENGINE.sold):,} صفقة، {len(SEARCH_INDEX):,} موديل قابل للتسعير")
 
@@ -476,6 +481,35 @@ def build_market_overview(n_months=12):
         },
         'verdict': verdict,
     }
+
+
+def build_trend_index(n_months=18):
+    """قسم «مؤشر اتجاه السوق» — عرض فقط، صفر حساب جديد: يقرأ سلسلة المحرك
+    الجاهزة ENGINE._mkt_global (مؤشر normalized-median الشهري المنعّم rolling-3
+    المبني في مرحلة المؤشر الزمني — نفس مصدر الحقيقة الذي يقوّم به evaluate)
+    ويحوّل المستوى اللوغاريتمي لمستوى نسبي بـ exp() ويقصّ آخر n_months شهراً.
+    الشهر الجاري (شهر ref_date، غير مكتمل) current=True. إعادة التوطين
+    (الأساس=100) تتم في الواجهة — عرض بحت. ويُرفق مؤشرات الماركات الجاهزة
+    بالمحرك (أكبر 3 ماركات بالبيانات التي لها مؤشر) — بلا أي منطق جديد."""
+    g = getattr(ENGINE, '_mkt_global', None)
+    if g is None or not len(g):
+        return None
+    cur = ENGINE.ref_date.to_period('M')
+
+    def _series(idx):
+        out = []
+        for p, v in idx.tail(n_months).items():
+            fv = float(v)
+            if not math.isfinite(fv):
+                continue
+            out.append({'month': str(p), 'value': round(math.exp(fv), 4),
+                        'current': bool(p == cur)})
+        return out
+
+    vc_b = ENGINE.sold['brand'].value_counts()
+    brands = [str(b) for b in vc_b.index if str(b) in ENGINE._mkt_brand][:3]
+    return {'global': _series(g),
+            'brands': {b: _series(ENGINE._mkt_brand[b]) for b in brands}}
 
 
 HTML = r"""<!DOCTYPE html>
@@ -1930,6 +1964,9 @@ MARKET_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
   .lead{text-align:center;color:var(--muted);font-size:12px;opacity:.8;margin-top:4px;line-height:1.7}
   .dlt{font-size:13px;font-weight:700;font-family:'Space Mono',monospace;white-space:nowrap}
   .dlt.up{color:var(--green)}.dlt.down{color:var(--red)}.dlt.flat{color:var(--muted)}
+  .tpills{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+  .tpill{background:var(--surface2);border:1px solid var(--line);border-radius:9px;color:var(--muted);padding:4px 10px;font-family:inherit;font-size:11.5px;cursor:pointer}
+  .tpill.on{border-color:rgba(201,162,39,.55);color:var(--gold-soft);background:rgba(201,162,39,.10)}
   .empty{text-align:center;color:var(--muted);padding:50px 20px;font-size:14px}
   .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:28px;font-family:'Space Mono',monospace}
 </style></head><body>
@@ -1980,9 +2017,42 @@ function card(ttl,help,valHtml,sub,deltaHtml,vals,color,curLast,explain){
     <div class="mval">${valHtml}</div><div class="msub">${sub}</div>
     <div class="mspark">${spark(vals,color,curLast)}</div>${cap}${explain||''}</div>`;
 }
+// ===== مؤشر اتجاه السوق (عرض سلسلة المحرك كما هي — إعادة توطين للعرض فقط) =====
+let TREND=null, trendSel='global';
+function trendSeries(){
+  if(!TREND) return null;
+  return trendSel==='global' ? TREND.global : (TREND.brands||{})[trendSel];
+}
+function renderTrend(){
+  const el=$('trend'); if(!el) return;
+  const s=trendSeries();
+  if(!s || s.length<13){ el.innerHTML=''; return; }
+  // آخر شهر مكتمل + شهر الأساس (قبله بـ 12 شهراً) — السلسلة شهور متتالية
+  let iLast=s.length-1;
+  if(s[iLast].current) iLast--;
+  const iBase=iLast-12;
+  if(iLast<1 || iBase<0){ el.innerHTML=''; return; }
+  const base=s[iBase].value;
+  const reb=s.map(x=>Math.round(x.value/base*1000)/10);   // الأساس=100
+  const pct=Math.round((s[iLast].value/base-1)*1000)/10;
+  const up=pct>=0, color=up?'#5dcaa5':'#f5a3a3';
+  const curLast=s[s.length-1].current;
+  const names={global:'العام'};
+  const pills=['global'].concat(Object.keys((TREND.brands)||{})).map(k=>
+    `<button class="tpill ${k===trendSel?'on':''}" onclick="trendSel='${k}';renderTrend()">${names[k]||k}</button>`).join('');
+  el.innerHTML=`<div class="mcard">
+    <div class="mtop"><div><div class="mttl">📈 مؤشر اتجاه السوق</div><div class="mhelp">من ${s[iBase].month} إلى ${s[iLast].month}</div></div><div class="tpills">${pills}</div></div>
+    <div class="mval" style="color:${color}">${up?'+':'−'}${Math.abs(pct)}% <small style="font-size:13px;color:var(--muted);font-family:'IBM Plex Sans Arabic',sans-serif">عبر آخر 12 شهراً</small></div>
+    <div class="msub">الأساس: ${s[iBase].month} = 100 → آخر شهر مكتمل ${s[iLast].month} = ${reb[iLast]}</div>
+    <div class="mspark">${spark(reb,color,curLast)}</div>
+    ${curLast?'<div class="mcur">◌ آخر نقطة منقّطة = الشهر الجاري (لسه ما خلص، لا يدخل بالعنوان)</div>':''}
+    <div class="mexp">يتتبّع أسعار الساعات الأكثر تداولاً عبر الزمن — الأساس: قبل 12 شهراً = 100. نفس المؤشر الذي يستخدمه محرك التسعير.</div>
+  </div>`;
+}
 async function load(){
   let m; try{ m=await (await fetch('/api/market')).json(); }catch(e){ m=null; }
   if(!m || !m.months || !m.months.length || !m.header || !m.header.level){ $('body').innerHTML='<div class="empty">تعذّر حساب وضع السوق حالياً.</div>'; return; }
+  TREND=m.trend_index||null;
   const v=m.verdict, h=m.header, M=m.months;
   const curLast = M.length>0 && M[M.length-1].current;   // آخر شهر = الجاري (لسه ما خلص)
   const vcls=v.label.includes('حار')?'hot':v.label.includes('بارد')?'cold':'stable';
@@ -1996,6 +2066,7 @@ async function load(){
       <div class="vnote">${v.note}</div>
     </div>
     <div class="subhint">آخر شهر مكتمل (${m.last_month}) مقابل متوسط الأشهر السابقة</div>
+    <div id="trend"></div>
     ${card('📐 مستوى السوق','سعر البيع ÷ القيمة الطبيعية (وسيط)',
        (lvPct>0?'+':'')+lvPct+'%', lvSub, dlt(h.level.chg,'%'),
        M.map(x=>x.level), lvColor, curLast,
@@ -2010,6 +2081,7 @@ async function load(){
        M.map(x=>x.sell), '#9ec7f0', curLast,
        `<div class="mexp"><b>يعني:</b> من كل الساعات المعروضة هالشهر، كم نسبة لقت مشتري؟</div>
         <div class="mex"><b>مثل:</b> عُرضت ١٠٠ ساعة، انباعت ٥٧.</div>`)}`;
+  renderTrend();
 }
 load();
 </script></body></html>"""
