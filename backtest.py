@@ -40,6 +40,9 @@ def main():
             continue
         eng.sold = full_sold.drop(index=hold.name)
         eng.ref_date = hold['priceDate']
+        # بلا تسريب: المؤشر يُبنى من البيعات حتى تاريخ الحجب فقط،
+        # والبيعة المحجوبة نفسها مستبعدة من بناء شهرها
+        eng._build_market_index(cutoff=hold['priceDate'])
         yr = int(hold['year']) if pd.notna(hold['year']) else None
         cond = 'Unworn' if hold['cond2'] == 'Unworn' else 'Pre-owned'
         fs = hold['fs'] == 'Full'
@@ -64,6 +67,7 @@ def main():
                      'estimated': bool(r.get('estimated'))})
     eng.sold = full_sold
     eng.ref_date = full_ref_date
+    eng._build_market_index()   # إعادة المؤشر الكامل لقسم التشخيص
     bt = pd.DataFrame([x for x in rows if 'error' not in x])
     errs = [x for x in rows if 'error' in x]
     bt.to_csv('backtest_results.csv', index=False)
@@ -75,6 +79,21 @@ def main():
     print(f"  أخطاء > 20%         : {(bt['ape_engine'] > 0.2).mean():.3f}")
     print(f"  تغطية [low, high]   : {100 * bt['in_range'].mean():.1f}%")
     print(f"  عرض النطاق الوسيط   : {100 * ((bt['high'] - bt['low']) / bt['fair']).median():.1f}%")
+    stale, fresh = bt[bt['age'] > 365], bt[bt['age'] <= 365]
+    print(f"  شريحة قديمة البيانات (>سنة): median APE {stale['ape_engine'].median():.3f} (n={len(stale)})")
+    print(f"  شريحة حديثة البيانات (≤سنة): median APE {fresh['ape_engine'].median():.3f} (n={len(fresh)})")
+
+    # إحصاءات معاملات التقويم الزمني (وقصّها) على كل البيعات
+    fs = []
+    for brand, grp in eng.sold.groupby('brand', observed=True):
+        if len(grp):
+            fs.append(eng._mkt_factor(str(brand), grp['priceDate']))
+    f = np.concatenate(fs)
+    lo_c, hi_c = eng.MKT_CLIP
+    print(f"\n== معاملات التقويم الزمني (كل {len(f):,} بيعة) ==")
+    print(f"  p5/p50/p95: {np.percentile(f, 5):.3f} / {np.percentile(f, 50):.3f} / {np.percentile(f, 95):.3f}")
+    print(f"  مقصوص عند الحدين [{lo_c}, {hi_c}]: {(f <= lo_c).sum()} + {(f >= hi_c).sum()} "
+          f"({100 * ((f <= lo_c) | (f >= hi_c)).mean():.2f}%)")
     if errs:
         for x in errs[:5]:
             print("  ⚠️", x['ref'], x['error'])

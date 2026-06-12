@@ -60,6 +60,8 @@ class WatchValuationEngine:
                                     .astype('float32'))
         self.notsold = df[(df['status'] == 'Not-Sold') & (df['lastBid'] > 0)].copy()
         self.ref_date = self.sold['priceDate'].max()
+        # مؤشر السوق الزمني (عام + لكل ماركة) — يُبنى مرة عند الإقلاع
+        self._build_market_index()
         self._coef_cache = {}
         # general fallback coefficients (all brands)
         self._general = self._fit(self.sold)
@@ -80,11 +82,11 @@ class WatchValuationEngine:
             self.discontinued = {}
         # معايرة النطاق (~85%): كميات [7.5%, 92.5%] لنسبة (الفعلي/المتوقع) من
         # backtest.py حسب شريحة الثقة. القيم الافتراضية من معايرة 2026-06-12
-        # (n=1117 حجباً)؛ ملف range_calibration.json يحدّثها لو وُجد.
+        # بعد إضافة مؤشر السوق (n=1117 حجباً)؛ range_calibration.json يحدّثها لو وُجد.
         self.range_cal = {
-            'reliable': {'rlo': 0.8352, 'rhi': 1.1437},
-            'medium':   {'rlo': 0.8352, 'rhi': 1.1763},
-            'wide':     {'rlo': 0.8127, 'rhi': 1.3074},
+            'reliable': {'rlo': 0.8264, 'rhi': 1.1298},
+            'medium':   {'rlo': 0.8264, 'rhi': 1.1603},
+            'wide':     {'rlo': 0.8264, 'rhi': 1.2889},
         }
         try:
             import json as _json, os as _os
@@ -97,6 +99,80 @@ class WatchValuationEngine:
                                              'rhi': float(t[k]['rhi'])}
         except Exception:
             pass
+
+    # حدود قصّ معامل التقويم الزمني (عامل خارجها = مؤشر غير موثوق لذلك الشهر)
+    MKT_CLIP = (0.5, 2.0)
+
+    def _build_market_index(self, cutoff=None):
+        """مؤشر سوق شهري لتقويم البيعات القديمة لـ«نقود اليوم».
+
+        المنهجية: normalized-median — كل بيعة من مرجع سائل (≥10 بيعات) تتحول
+        لنسبة لوغاريتمية من وسيط مرجعها طويل المدى (بالأسعار الخام)، ووسيط هذه
+        النسب شهرياً هو مستوى المؤشر. اختيرت بدل repeat-sales لأن البيانات لا
+        تتعقب الساعة الواحدة عبر بيعات متعددة (كل auctionWatchId إدراج مستقل)،
+        ووسيط المرجع يلعب دور «الأثر الثابت» فيعطي أزواجاً ضمنية أغزر وأمتن.
+
+        هرمي: مؤشر عام + مؤشر ماركة (لو لها ≥60 بيعة سائلة) ممزوج بالعام بوزن
+        حجمها الشهري w=min(1, n/20). تنعيم rolling-3 لاحق (trailing — لا يطل
+        على المستقبل)، وسد فجوات الأشهر بالاستيفاء. cutoff (للـ backtest):
+        يبني المؤشر من البيعات حتى ذلك التاريخ فقط — صفر تسريب من المستقبل.
+        """
+        s = self.sold
+        if cutoff is not None:
+            s = s[s['priceDate'] <= cutoff]
+        price = (s['soldPrice_raw'] if 'soldPrice_raw' in s.columns
+                 else s['soldPrice']).astype('float64')
+        vc = s['referance'].value_counts()
+        liq = s['referance'].isin(vc[vc >= 10].index)
+        t, tp = s[liq], price[liq]
+        self._mkt_global, self._mkt_brand = None, {}
+        if len(t) < 200:
+            return
+        refmed = tp.groupby(t['referance']).transform('median')
+        ratio = np.log(tp / refmed)          # نسبة لوغاريتمية (level شهري)
+        m = t['priceDate'].dt.to_period('M')
+        last = (pd.Timestamp(cutoff) if cutoff is not None
+                else self.sold['priceDate'].max())
+        months = pd.period_range(m.min(), last.to_period('M'), freq='M')
+        # المؤشر العام: وسيط شهري (≥5 بيعات) → استيفاء → تنعيم trailing
+        gmed = ratio.groupby(m).median()
+        gcnt = ratio.groupby(m).size()
+        g = (gmed.where(gcnt >= 5).reindex(months)
+             .interpolate(limit_direction='both')
+             .rolling(3, min_periods=1).mean())
+        self._mkt_global = g
+        # مؤشرات الماركات: مزيج بوزن الحجم الشهري مع العام
+        b = t['brand'].astype(str)
+        bm_med = ratio.groupby([b, m]).median()
+        bm_cnt = ratio.groupby([b, m]).size()
+        for brand in bm_cnt.index.get_level_values(0).unique():
+            cnts = bm_cnt.loc[brand]
+            if cnts.sum() < 60:              # ماركة رقيقة → تستخدم العام
+                continue
+            n = cnts.reindex(months).fillna(0.0)
+            raw = bm_med.loc[brand].reindex(months).where(n >= 5)
+            w = (n / 20.0).clip(0.0, 1.0)
+            blended = w * raw.fillna(g) + (1.0 - w) * g
+            self._mkt_brand[brand] = (blended
+                                      .interpolate(limit_direction='both')
+                                      .rolling(3, min_periods=1).mean())
+
+    def _mkt_factor(self, brand, dates):
+        """معامل تقويم كل بيعة لنقود شهر ref_date: exp(idx[الآن] − idx[شهرها])،
+        مقصوص ضمن MKT_CLIP. يرجع مصفوفة بطول dates."""
+        idx = self._mkt_brand.get(str(brand), self._mkt_global)
+        if idx is None or not len(idx):
+            return np.ones(len(dates))
+        asof = self.ref_date.to_period('M')
+        cur = idx.get(asof, np.nan)
+        if not np.isfinite(cur):
+            valid = idx.dropna()
+            if not len(valid):
+                return np.ones(len(dates))
+            cur = float(valid.iloc[-1])
+        lv = idx.reindex(dates.dt.to_period('M')).to_numpy(dtype='float64')
+        lv = np.where(np.isfinite(lv), lv, cur)   # شهر خارج المدى → بلا تعديل
+        return np.clip(np.exp(cur - lv), *self.MKT_CLIP)
 
     def discontinued_info(self, reference):
         """يرجّع (سنة التوقف، السبب) لو معروف، وإلا (None, None)."""
@@ -209,6 +285,16 @@ class WatchValuationEngine:
         comps = self.sold[self.sold['referance'] == reference]
         if len(comps) == 0:
             return {'ok': False, 'msg': f'لا توجد مبيعات للموديل {reference}'}
+
+        # --- التقويم الزمني: كل بيعة بـ«نقود اليوم» (نسخة — self.sold لا يُمسّ) ---
+        # السعر × (المؤشر الآن ÷ المؤشر بشهر بيعها). يعالج «بيانات قديمة تنعرض
+        # كسعر اليوم» ويصحح اتجاه الماركات الهابطة من جذره. كل ما بعده كما هو:
+        # تطبيع السنة/الحالة، الأوزان وESS، تصحيح نفس السنة، كاشف القفزة، النطاق.
+        comps = comps.copy()
+        _bm = comps['brand'].dropna().mode()
+        comps['mkt_f'] = self._mkt_factor(_bm.iloc[0] if len(_bm) else '',
+                                          comps['priceDate'])
+        comps['soldPrice'] = comps['soldPrice'].astype('float64') * comps['mkt_f']
 
         # تجاوز بحدث: استخدم فقط الصفقات بعد تاريخ الحدث (مثل توقف الإنتاج)
         jump_date = None
@@ -678,6 +764,11 @@ class WatchValuationEngine:
             'ess': round(ess, 1),
             'data_age_days': pool_age_days,
             'top_w_share': round(top_w_share, 3),
+            # شفافية التقويم الزمني: المعامل المطبق على أقدم وأحدث بيعة بالعينة
+            'index_factor_oldest': round(float(
+                pool.loc[pool['priceDate'].idxmin(), 'mkt_f']), 3),
+            'index_factor_newest': round(float(
+                pool.loc[pool['priceDate'].idxmax(), 'mkt_f']), 3),
             'narrative': narrative,
             'recent_sales': recent_sales,
             'recent_all': recent_all,
