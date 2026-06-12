@@ -63,6 +63,23 @@ git commit -m "Data update: $(date '+%Y-%m-%d %H:%M')
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
+# إعادة معايرة دورية: لو مرّ ≥30 يوم على آخر سطر في السجل — غير كذا تخطَّ بصمت
+RECAL_LOG="reports/recalibration_log.txt"
+RECAL_LAST="$(tail -1 "$RECAL_LOG" 2>/dev/null | cut -d' ' -f1)"
+RECAL_LAST_S="$(date -j -f '%Y-%m-%d' "$RECAL_LAST" +%s 2>/dev/null || echo 0)"
+if [ $(( ( $(date +%s) - RECAL_LAST_S ) / 86400 )) -ge 30 ]; then
+  echo "▶ إعادة المعايرة الدورية (مرّ ≥30 يوم) ..."
+  if python3 recalibrate.py; then
+    git add range_calibration.json sibling_calibration.json "$RECAL_LOG"
+    git commit -m "Recalibration: $(date '+%Y-%m-%d')
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+  else
+    echo "  (تخطّينا إعادة المعايرة — تحقّق لاحقاً)"
+  fi
+  echo ""
+fi
+
 if git push; then
   echo ""
   echo "✅ تم! Render بيعيد النشر تلقائياً بالبيانات الجديدة خلال دقائق."
