@@ -310,7 +310,7 @@ def latest_sales(limit=500):
     """أحدث المبيعات من بيانات المحرك مباشرة (بالذاكرة، دائماً محدّثة)."""
     s = ENGINE.sold
     cols = ['referance', 'brand', 'model', 'size', 'soldPrice', 'priceDate',
-            'pageName', 'cond2', 'fs']
+            'pageName', 'cond2', 'fs', 'year']
     d = s[cols].sort_values('priceDate', ascending=False).head(limit)
     out = []
     for r in d.itertuples(index=False):
@@ -328,9 +328,91 @@ def latest_sales(limit=500):
             'house': house,
             'cond': ('غير مستخدمة' if str(r.cond2).startswith('Unworn') else 'مستخدمة'),
             'fs': ('Full Set' if str(r.fs).startswith('Full') else 'ناقص'),
+            # سنة الصنع (نفس مصدر سجل السنوات) — None لو مفقودة/غير معروفة
+            'year': (int(r.year) if pd.notna(r.year) else None),
             'image': image_file_for(str(r.referance)),
         })
     return out
+
+
+def _index_factor_at(brand, ym):
+    """معامل التقويم الزمني للمحرك لشهر ym (pd.Period 'M') — مطابق تماماً لمنطق
+    ENGINE._mkt_factor (exp(idx[الآن] − idx[الشهر]) مقصوص ضمن MKT_CLIP)، لكنه
+    يرجّع None لو الشهر خارج تغطية المؤشر بدل تطبيق معامل=1 مضلّل. استهلاك للمحرك
+    فقط — لا يبني ولا يعدّل أي مؤشر."""
+    eng = ENGINE
+    if eng is None:
+        return None
+    idx = eng._mkt_brand.get(str(brand), eng._mkt_global)
+    if idx is None or not len(idx):
+        return None
+    asof = eng.ref_date.to_period('M')
+    cur = idx.get(asof)
+    if cur is None or pd.isna(cur):
+        valid = idx.dropna()
+        if not len(valid):
+            return None
+        cur = float(valid.iloc[-1])
+    lv = idx.get(ym)
+    if lv is None or pd.isna(lv):          # شهر خارج تغطية المؤشر → لا حساب
+        return None
+    lo, hi = eng.MKT_CLIP
+    return min(max(math.exp(float(cur) - float(lv)), lo), hi)
+
+
+def enrich_fair_then(r):
+    """يضيف لكل صف «بيعت» في recent_all/recent_year حقلين للعرض فقط:
+       • fair_then: السعر العادل لنفس المرجع/الحالة مُرجَّعاً زمنياً لشهر البيعة
+         = (السعر المقترح الحالي ÷ معامل التقويم index_factor لذلك الشهر).
+       • fair_pct: نسبة فرق سعر البيع عن العادل وقتها (− = تحت العادل، + = فوقه).
+    لا يلمس أي سعر يحسبه المحرك — يستهلك ENGINE.evaluate ومؤشر السوق فقط. لو تعذّر
+    الحساب (تقييم غير كافٍ أو شهر خارج تغطية المؤشر) لا يضيف الحقول فلا تظهر شارة."""
+    if not isinstance(r, dict) or not r.get('ok'):
+        return r
+    ref = r.get('reference')
+    brand = r.get('brand', '')
+    if not ref:
+        return r
+    cache = {}
+    # السعر المقترح الحالي «اليوم» لنفس المرجع/الحالة (كل السنوات) — مُكيَّش بـ(حالة، طقم).
+    # نُغذّي الكاش من نتيجة الصفحة نفسها لو كانت لكل السنوات (صفر استدعاء إضافي للحالة الشائعة).
+    if r.get('year') is None and not r.get('insufficient'):
+        cache[(r.get('condition'), bool(r.get('full_set')))] = r.get('fair')
+    def fair_today(cond, fs):
+        key = (cond, fs)
+        if key not in cache:
+            try:
+                er = ENGINE.evaluate(reference=ref, year=None, condition=cond, full_set=fs)
+                cache[key] = (er['fair'] if er.get('ok') and not er.get('insufficient')
+                              else None)
+            except Exception:
+                cache[key] = None
+        return cache[key]
+    for tbl in ('recent_all', 'recent_year'):
+        for row in (r.get(tbl) or []):
+            if not row.get('sold'):
+                continue                       # «غير مباعة» → لا شارة أبداً
+            price = row.get('price')
+            if not price or price <= 0:
+                continue
+            cond = 'Unworn' if row.get('condition') == 'غير مستخدمة' else 'Pre-owned'
+            fs = (row.get('fullset') == 'Full Set')
+            ft = fair_today(cond, fs)
+            if not ft or ft <= 0:
+                continue                       # بيانات غير كافية → لا شارة
+            try:
+                ym = pd.Period(str(row['date'])[:7], freq='M')
+            except Exception:
+                continue
+            factor = _index_factor_at(brand, ym)
+            if not factor:                     # خارج تغطية المؤشر → لا شارة
+                continue
+            fair_then = ft / factor
+            if fair_then <= 0:
+                continue
+            row['fair_then'] = int(round(fair_then))
+            row['fair_pct'] = round((price / fair_then - 1) * 100)
+    return r
 
 
 import functools
@@ -1021,11 +1103,22 @@ function render(d, yearRows){
   if(d.demand && d.demand.length>1){
     demand=`<div class="demand">${d.demand[0]==='upside'?'📈':'⚖️'} ${d.demand[1]}</div>`;
   }
+  // شارة «مقابل العادل وقتها»: تقارن سعر البيع بالعادل المُرجَّع زمنياً لشهر البيعة.
+  // للمباع فقط، ولو توفّر fair_pct من الخادم (وإلا لا شارة بدل رقم مضلّل).
+  function fairBadge(s){
+    if(!s.sold || s.fair_pct==null) return '';
+    const p=s.fair_pct, tip=`العادل وقتها ≈ ${fmt(s.fair_then)} KWD`;
+    let bg,col,txt;
+    if(p<=-2){ col='#5dcaa5'; bg='rgba(63,178,127,.14)'; txt='−'+Math.abs(p)+'%'; }       // تحت العادل = صفقة
+    else if(p>=2){ col='#f5a3a3'; bg='rgba(224,98,94,.14)'; txt='+'+p+'%'; }               // فوق العادل = دفع زيادة
+    else { col='var(--muted)'; bg='rgba(255,255,255,.05)'; txt='عادل'; }                   // ضمن ±2% = محايد
+    return `<div title="${tip}" style="margin-top:4px;display:inline-block;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:7px;background:${bg};color:${col};font-family:'Space Mono',monospace">${txt}</div>`;
+  }
   function listingRow(s, withYear){
     return `<tr>
         <td class="date">${s.date}</td>
         ${withYear?`<td class="date" style="text-align:center">${s.year||'—'}</td>`:''}
-        <td class="price" style="color:${s.sold?'#5dcaa5':'#f5a3a3'};font-weight:700">${fmt(s.price)}</td>
+        <td class="price" style="color:${s.sold?'#5dcaa5':'#f5a3a3'};font-weight:700">${fmt(s.price)}${fairBadge(s)}</td>
         <td><span class="pill ${s.sold?'sold':'unsold'}">${s.sold?'بيعت':'غير مباعة'}</span></td>
         <td><span class="pill ${s.condition==='غير مستخدمة'?'un':''}">${s.condition}</span></td>
         <td style="color:var(--muted)">${s.fullset}</td>
@@ -2197,6 +2290,7 @@ function applyFilters(){
           ${d.house?`<span>🏛 ${d.house}</span>`:''}
           <span>${d.cond}</span>
           <span>${d.fs}</span>
+          <span>📆 ${d.year?('صنع '+d.year):'سنة غير معروفة'}</span>
         </div>
       </div>
       <div class="dside">
@@ -2370,6 +2464,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     img = image_file_for(r['reference'])
                     if img:
                         r['image_file'] = img
+                    enrich_fair_then(r)        # شارة «مقابل العادل وقتها» لصفوف البيع
                 self._send(200, jdumps(r, ensure_ascii=False, default=str))
             except Exception as e:
                 self._send(200, jdumps({'ok': False, 'msg': str(e)}, ensure_ascii=False))
