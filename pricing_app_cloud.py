@@ -73,11 +73,12 @@ DEALS = []
 HOT = []
 BUDGET = []
 MARKET = {}
+AUCTIONS = []
 
 def boot():
     """تحميل المحرك وبناء فهرس البحث. يُستدعى بعد ربط المنفذ مباشرة."""
     global ENGINE, SEARCH_INDEX, _years_by_ref, _REF_INFO, _REF_SIZE, HOTTEST
-    global BROWSE_BRANDS, BROWSE_FAMILIES, BROWSE_REFS, DEALS, HOT, BUDGET, MARKET, LOGOS
+    global BROWSE_BRANDS, BROWSE_FAMILIES, BROWSE_REFS, DEALS, HOT, BUDGET, MARKET, LOGOS, AUCTIONS
     print("جاري تحميل المحرك والبيانات ...")
     ENGINE = WatchValuationEngine(csv_path=CSV_PATH, discontinued_csv=DISC_CSV)
 
@@ -236,6 +237,12 @@ def boot():
         MARKET['trend_index'] = build_trend_index()
     except Exception:
         MARKET['trend_index'] = None
+
+    # جدول المزادات — تجميع بالذاكرة لكل دار (عرض فقط، لا يمسّ أي تسعير)
+    try:
+        AUCTIONS = build_auctions_table()
+    except Exception:
+        AUCTIONS = []
 
     print(f"✓ جاهز — {len(ENGINE.sold):,} صفقة، {len(SEARCH_INDEX):,} موديل قابل للتسعير")
 
@@ -619,6 +626,48 @@ def build_trend_index(n_months=18):
     brands = [str(b) for b in vc_b.index if str(b) in ENGINE._mkt_brand][:3]
     return {'global': _series(g),
             'brands': {b: _series(ENGINE._mkt_brand[b]) for b in brands}}
+
+
+# أسماء أيام الأسبوع بالعربي مرتّبة من الأحد للسبت (نفس ترتيب أسبوع الخليج)
+_DAYS_AR = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت']
+# علم/إيموجي لكل دولة بالبيانات (6 دول خليجية)
+_COUNTRY_FLAG = {'UAE': '🇦🇪', 'Kuwait': '🇰🇼', 'Qatar': '🇶🇦',
+                 'Bahrain': '🇧🇭', 'KSA': '🇸🇦', 'Oman': '🇴🇲'}
+
+
+def build_auctions_table():
+    """جدول المزادات — تجميع بالذاكرة لكل دار (pageName). عرض/قراءة فقط:
+      • الدولة = country للدار (كل دار بدولة واحدة في البيانات).
+      • التوزيع الأسبوعي = عدد البيعات بكل يوم (الأحد..السبت) من يوم إغلاق
+        البيعة (priceDate). الأيام «الغالبة» = الأيام التي عددها ≥ نصف ذروة الدار.
+      • الإجمالي = عدد بيعات الدار (مقياس حجمها).
+    لا يلمس أي سعر — يقرأ pageName/country/priceDate فقط من ENGINE.sold."""
+    s = ENGINE.sold
+    out = []
+    for house, g in s.groupby('pageName', observed=True):
+        house = str(house).strip()
+        if not house or house.lower() == 'nan':
+            continue
+        cmode = g['country'].mode()
+        country = str(cmode.iloc[0]).strip() if len(cmode) else ''
+        total = int(len(g))
+        # التوزيع الأسبوعي بترتيب الأحد→السبت (pandas: الإثنين=0..الأحد=6)
+        dist = [0] * 7
+        for dow in g['priceDate'].dropna().dt.dayofweek:
+            dist[(int(dow) + 1) % 7] += 1
+        peak = max(dist) if dist else 0
+        dom_idx = sorted((i for i, c in enumerate(dist) if c > 0 and c >= 0.5 * peak),
+                         key=lambda i: -dist[i])
+        out.append({
+            'house': house,
+            'country': country,
+            'flag': _COUNTRY_FLAG.get(country, ''),
+            'total': total,
+            'dist': dist,                                   # [الأحد..السبت]
+            'dominant': [_DAYS_AR[i] for i in dom_idx],     # الأيام الغالبة مرتّبة تنازلياً
+        })
+    out.sort(key=lambda r: -r['total'])                     # الأكثر نشاطاً أولاً
+    return out
 
 
 HTML = r"""<!DOCTYPE html>
@@ -2356,6 +2405,116 @@ load();
 </script></body></html>"""
 
 
+AUCTIONS_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChronoTracker — جدول المزادات</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box}
+  :root{--bg:#0e0e10;--surface:#19191d;--surface2:#222228;--line:#2e2e36;--gold:#c9a227;--gold-soft:#e8c860;--text:#ececf0;--muted:#8a8a95;--green:#3fb27f}
+  body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans Arabic',sans-serif;min-height:100vh;line-height:1.6;padding:24px 16px}
+  .wrap{max-width:820px;margin:0 auto}
+  .head{text-align:center;margin-bottom:14px;padding-top:16px}
+  .head .mark{font-family:'Space Mono',monospace;color:var(--gold);font-size:13px;letter-spacing:2px}
+  .head h1{font-size:24px;font-weight:700;margin:6px 0}
+  .head p{color:var(--muted);font-size:13px}
+  .note{max-width:640px;margin:0 auto 16px;text-align:center;color:var(--muted);font-size:11.5px;line-height:1.7;background:rgba(201,162,39,.06);border:1px solid rgba(201,162,39,.18);border-radius:10px;padding:9px 13px}
+  .filters{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:10px}
+  .filters select{background:var(--surface2);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:7px 11px;font-family:inherit;font-size:13px}
+  .count{color:var(--muted);font-size:12px;text-align:center;margin-bottom:14px;font-family:'Space Mono',monospace}
+  .acard{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:13px 15px;margin-bottom:11px;transition:border-color .2s}
+  .acard:hover{border-color:rgba(201,162,39,.45)}
+  .arow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .rank{font-family:'Space Mono',monospace;color:var(--muted);font-size:13px;min-width:26px}
+  .hname{font-size:15px;font-weight:700;color:var(--text)}
+  .hcountry{font-size:12.5px;color:var(--gold-soft);font-weight:600}
+  .htot{margin-inline-start:auto;font-family:'Space Mono',monospace;color:var(--gold-soft);font-weight:700;font-size:14px;white-space:nowrap}
+  .htot small{color:var(--muted);font-size:11px;font-weight:400}
+  .dom{margin-top:8px;font-size:12.5px;color:var(--text)}
+  .dom b{color:var(--gold-soft);font-weight:700}
+  .domtag{display:inline-block;background:rgba(201,162,39,.14);color:var(--gold-soft);border:1px solid rgba(201,162,39,.3);border-radius:7px;padding:1px 8px;margin-inline-start:5px;font-size:12px;font-weight:600}
+  .bars{margin-top:9px;display:flex;gap:5px;align-items:flex-end;height:46px}
+  .bcol{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:3px;height:100%}
+  .bcol .bar{width:100%;max-width:30px;background:rgba(201,162,39,.25);border-radius:4px 4px 0 0;min-height:2px}
+  .bcol.peak .bar{background:var(--gold)}
+  .bcol .blbl{font-size:9.5px;color:var(--muted);white-space:nowrap}
+  .bcol .bval{font-size:9px;color:var(--muted);font-family:'Space Mono',monospace}
+  .empty{text-align:center;color:var(--muted);padding:50px 20px;font-size:14px}
+  .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:28px;font-family:'Space Mono',monospace}
+</style></head><body>
+<!--NAV-->
+<div class="wrap">
+  <div class="head">
+    <div class="mark">CHRONOTRACKER</div>
+    <h1>🏛️ جدول المزادات</h1>
+    <p>دور المزاد — دولها وأيام نشاطها وحجمها</p>
+  </div>
+  <div class="note">اليوم مبني على تاريخ إغلاق البيعات في بياناتنا — يعكس متى تُغلق صفقات كل دار، وقد يختلف عن يوم انعقاد المزاد الرسمي.</div>
+  <div class="filters">
+    <select id="fCountry"><option value="all">الدولة: الكل</option></select>
+    <select id="fSort">
+      <option value="active">الأكثر نشاطاً</option>
+      <option value="least">الأقل نشاطاً</option>
+      <option value="name">الاسم (أ→ي)</option>
+    </select>
+  </div>
+  <div class="count" id="count"></div>
+  <div id="list"></div>
+  <div class="foot">ChronoTracker</div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const DAYS=['الأحد','الإثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+let AUC=[];
+function fmt(n){return Number(n).toLocaleString('en-US');}
+function bars(dist){
+  const peak=Math.max(...dist,0);
+  return '<div class="bars">'+dist.map((c,i)=>{
+    const h=peak>0?Math.round(c/peak*100):0;
+    return `<div class="bcol${c>0&&c===peak?' peak':''}" title="${DAYS[i]}: ${fmt(c)}">`
+      +`<div class="bval">${c?fmt(c):''}</div>`
+      +`<div class="bar" style="height:${h}%"></div>`
+      +`<div class="blbl">${DAYS[i].replace('ال','')}</div></div>`;
+  }).join('')+'</div>';
+}
+function render(){
+  const country=$('fCountry').value, sort=$('fSort').value;
+  let ds=AUC.slice();
+  if(country!=='all') ds=ds.filter(a=>a.country===country);
+  if(sort==='least') ds.sort((a,b)=>a.total-b.total);
+  else if(sort==='name') ds.sort((a,b)=>a.house.localeCompare(b.house,'ar'));
+  else ds.sort((a,b)=>b.total-a.total);
+  $('count').textContent = ds.length? `${fmt(ds.length)} دار مزاد` : 'لا توجد دور بهذه الفلاتر';
+  $('list').innerHTML = ds.map((a,i)=>`
+    <div class="acard">
+      <div class="arow">
+        <span class="rank">#${i+1}</span>
+        <span class="hname">${a.house}</span>
+        <span class="hcountry">${a.flag||''} ${a.country||''}</span>
+        <span class="htot">${fmt(a.total)} <small>بيعة</small></span>
+      </div>
+      <div class="dom">الأيام الغالبة: ${a.dominant&&a.dominant.length
+        ? a.dominant.map(d=>`<span class="domtag">${d}</span>`).join('')
+        : '<span style="color:var(--muted)">—</span>'}</div>
+      ${bars(a.dist||[0,0,0,0,0,0,0])}
+    </div>`).join('');
+}
+async function load(){
+  try{ const r=await fetch('/api/auctions'); AUC=await r.json(); if(!Array.isArray(AUC)) AUC=[]; }
+  catch(e){ AUC=[]; }
+  if(!AUC.length){ $('count').textContent=''; $('list').innerHTML='<div class="empty">لا توجد بيانات دور مزاد.</div>'; return; }
+  const countries=[...new Set(AUC.map(a=>a.country).filter(Boolean))].sort();
+  const sel=$('fCountry');
+  countries.forEach(c=>{const o=document.createElement('option');o.value=c;
+    const flag=(AUC.find(a=>a.country===c)||{}).flag||'';
+    o.textContent=`${flag} ${c}`;sel.appendChild(o);});
+  ['fCountry','fSort'].forEach(id=>$(id).onchange=render);
+  render();
+}
+load();
+</script></body></html>"""
+
+
 # شريط تنقّل موحّد يظهر بأعلى كل الصفحات (يستبدل <!--NAV-->)
 _NAV_PILL = ("display:inline-flex;align-items:center;gap:6px;padding:7px 14px;"
              "border-radius:10px;text-decoration:none;font-size:13px;font-weight:600;"
@@ -2372,11 +2531,12 @@ NAV_BAR = (
     f'<a href="/budget" style="{_NAV_PILL}">🛒 ضمن ميزانيتي</a>'
     f'<a href="/market" style="{_NAV_PILL}">📊 وضع السوق</a>'
     f'<a href="/latest" style="{_NAV_PILL}">🆕 أحدث المبيعات</a>'
+    f'<a href="/auctions" style="{_NAV_PILL}">🏛️ جدول المزادات</a>'
     f'<a href="/browse" style="{_NAV_PILL}">🖼️ تصفّح</a>'
     '</nav>'
 )
 for _pg in ('HTML', 'FAV_HTML', 'BROWSE_HTML', 'DEALS_HTML', 'HOT_HTML', 'BUDGET_HTML',
-            'MARKET_HTML', 'LATEST_HTML'):
+            'MARKET_HTML', 'LATEST_HTML', 'AUCTIONS_HTML'):
     globals()[_pg] = globals()[_pg].replace('<!--NAV-->', NAV_BAR)
 
 
@@ -2517,6 +2677,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                                            ensure_ascii=False, default=str))
             except Exception:
                 self._send(200, jdumps([], ensure_ascii=False))
+        elif path == '/auctions' or path == '/auctions.html':
+            self._send(200, AUCTIONS_HTML, 'text/html')
+        elif path == '/api/auctions':
+            self._send(200, jdumps(AUCTIONS, ensure_ascii=False))
         elif path == '/favorites' or path == '/favorites.html':
             self._send(200, FAV_HTML, 'text/html')
         elif path == '/api/favorites':
