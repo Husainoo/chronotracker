@@ -2437,6 +2437,8 @@ AUCTIONS_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
   .bcol{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:3px;height:100%}
   .bcol .bar{width:100%;max-width:30px;background:rgba(201,162,39,.25);border-radius:4px 4px 0 0;min-height:2px}
   .bcol.peak .bar{background:var(--gold)}
+  .bcol.sel .bar{background:var(--green);box-shadow:0 0 0 1px rgba(63,178,127,.5)}
+  .bcol.sel .blbl{color:var(--green);font-weight:700}
   .bcol .blbl{font-size:9.5px;color:var(--muted);white-space:nowrap}
   .bcol .bval{font-size:9px;color:var(--muted);font-family:'Space Mono',monospace}
   .empty{text-align:center;color:var(--muted);padding:50px 20px;font-size:14px}
@@ -2452,6 +2454,16 @@ AUCTIONS_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
   <div class="note">اليوم مبني على تاريخ إغلاق البيعات في بياناتنا — يعكس متى تُغلق صفقات كل دار، وقد يختلف عن يوم انعقاد المزاد الرسمي.</div>
   <div class="filters">
     <select id="fCountry"><option value="all">الدولة: الكل</option></select>
+    <select id="fDay">
+      <option value="all">اليوم: كل الأيام</option>
+      <option value="0">الأحد</option>
+      <option value="1">الإثنين</option>
+      <option value="2">الثلاثاء</option>
+      <option value="3">الأربعاء</option>
+      <option value="4">الخميس</option>
+      <option value="5">الجمعة</option>
+      <option value="6">السبت</option>
+    </select>
     <select id="fSort">
       <option value="active">الأكثر نشاطاً</option>
       <option value="least">الأقل نشاطاً</option>
@@ -2467,25 +2479,51 @@ const $=id=>document.getElementById(id);
 const DAYS=['الأحد','الإثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
 let AUC=[];
 function fmt(n){return Number(n).toLocaleString('en-US');}
-function bars(dist){
+function bars(dist,hi){
   const peak=Math.max(...dist,0);
   return '<div class="bars">'+dist.map((c,i)=>{
     const h=peak>0?Math.round(c/peak*100):0;
-    return `<div class="bcol${c>0&&c===peak?' peak':''}" title="${DAYS[i]}: ${fmt(c)}">`
+    const cls=(hi===i)?' sel':(c>0&&c===peak?' peak':'');
+    return `<div class="bcol${cls}" title="${DAYS[i]}: ${fmt(c)}">`
       +`<div class="bval">${c?fmt(c):''}</div>`
       +`<div class="bar" style="height:${h}%"></div>`
       +`<div class="blbl">${DAYS[i].replace('ال','')}</div></div>`;
   }).join('')+'</div>';
 }
 function render(){
-  const country=$('fCountry').value, sort=$('fSort').value;
+  const country=$('fCountry').value, sort=$('fSort').value, dayv=$('fDay').value;
+  const day=(dayv==='all')?null:parseInt(dayv,10);
   let ds=AUC.slice();
   if(country!=='all') ds=ds.filter(a=>a.country===country);
+  if(day!==null){
+    // فلتر يوم: الدور النشطة ذلك اليوم فقط، مرتّبة بعدد بيعات ذلك اليوم تنازلياً
+    ds=ds.filter(a=>(a.dist&&a.dist[day]>0));
+    ds.sort((a,b)=>b.dist[day]-a.dist[day]);
+    $('count').textContent = ds.length
+      ? `${fmt(ds.length)} دار نشطة ${DAYS[day]} — مرتّبة بعدد بيعات ${DAYS[day]}`
+      : '';
+    $('list').innerHTML = ds.length ? ds.map((a,i)=>`
+      <div class="acard">
+        <div class="arow">
+          <span class="rank">#${i+1}</span>
+          <span class="hname">${a.house}</span>
+          <span class="hcountry">${a.flag||''} ${a.country||''}</span>
+          <span class="htot">${fmt(a.dist[day])} <small>بيعة ${DAYS[day]}</small></span>
+        </div>
+        <div class="dom">إجمالي الدار: <b>${fmt(a.total)}</b> بيعة · الأيام الغالبة: ${a.dominant&&a.dominant.length
+          ? a.dominant.map(d=>`<span class="domtag">${d}</span>`).join('')
+          : '<span style="color:var(--muted)">—</span>'}</div>
+        ${bars(a.dist||[0,0,0,0,0,0,0],day)}
+      </div>`).join('')
+      : '<div class="empty">ما فيه مزادات نشطة هذا اليوم.</div>';
+    return;
+  }
+  // كل الأيام — العرض الافتراضي
   if(sort==='least') ds.sort((a,b)=>a.total-b.total);
   else if(sort==='name') ds.sort((a,b)=>a.house.localeCompare(b.house,'ar'));
   else ds.sort((a,b)=>b.total-a.total);
   $('count').textContent = ds.length? `${fmt(ds.length)} دار مزاد` : 'لا توجد دور بهذه الفلاتر';
-  $('list').innerHTML = ds.map((a,i)=>`
+  $('list').innerHTML = ds.length ? ds.map((a,i)=>`
     <div class="acard">
       <div class="arow">
         <span class="rank">#${i+1}</span>
@@ -2497,7 +2535,8 @@ function render(){
         ? a.dominant.map(d=>`<span class="domtag">${d}</span>`).join('')
         : '<span style="color:var(--muted)">—</span>'}</div>
       ${bars(a.dist||[0,0,0,0,0,0,0])}
-    </div>`).join('');
+    </div>`).join('')
+    : '<div class="empty">لا توجد دور بهذه الفلاتر.</div>';
 }
 async function load(){
   try{ const r=await fetch('/api/auctions'); AUC=await r.json(); if(!Array.isArray(AUC)) AUC=[]; }
@@ -2508,7 +2547,7 @@ async function load(){
   countries.forEach(c=>{const o=document.createElement('option');o.value=c;
     const flag=(AUC.find(a=>a.country===c)||{}).flag||'';
     o.textContent=`${flag} ${c}`;sel.appendChild(o);});
-  ['fCountry','fSort'].forEach(id=>$(id).onchange=render);
+  ['fCountry','fDay','fSort'].forEach(id=>$(id).onchange=render);
   render();
 }
 load();
