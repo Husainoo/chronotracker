@@ -2427,6 +2427,10 @@ AUCTIONS_HTML = r"""<!DOCTYPE html><html lang="ar" dir="rtl"><head>
   .arow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   .rank{font-family:'Space Mono',monospace;color:var(--muted);font-size:13px;min-width:26px}
   .hname{font-size:15px;font-weight:700;color:var(--text)}
+  a.hname{color:var(--gold-soft);text-decoration:none;display:inline-flex;align-items:center;cursor:pointer}
+  a.hname:hover{text-decoration:underline;text-underline-offset:3px}
+  a.hname svg{opacity:.8;transition:opacity .15s}
+  a.hname:hover svg{opacity:1}
   .hcountry{font-size:12.5px;color:var(--gold-soft);font-weight:600}
   .htot{margin-inline-start:auto;font-family:'Space Mono',monospace;color:var(--gold-soft);font-weight:700;font-size:14px;white-space:nowrap}
   .htot small{color:var(--muted);font-size:11px;font-weight:400}
@@ -2479,6 +2483,17 @@ const $=id=>document.getElementById(id);
 const DAYS=['الأحد','الإثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
 let AUC=[];
 function fmt(n){return Number(n).toLocaleString('en-US');}
+// أيقونة إنستقرام صغيرة (currentColor — تتبع لون الرابط)
+const IG_ICON='<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-inline-start:5px;flex:0 0 auto"><rect x="2" y="2" width="20" height="20" rx="5.5"/><circle cx="12" cy="12" r="4.4"/><circle cx="17.6" cy="6.4" r="1.2" fill="currentColor" stroke="none"/></svg>';
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+// اسم الدار: رابط إنستقرام لو اليوزر صالح، وإلا نص عادي (لا رابط مكسور)
+function houseEl(house){
+  const raw=String(house||'').trim();
+  const u=raw.replace(/^@+/,'').trim();              // أزل @ البادئة لو وُجدت
+  const valid=/^[A-Za-z0-9._]{1,30}$/.test(u);       // قواعد يوزر إنستقرام (حروف/أرقام/نقطة/شرطة سفلية)
+  if(!valid) return `<span class="hname">${esc(raw)}</span>`;
+  return `<a class="hname hlink" href="https://instagram.com/${encodeURIComponent(u)}" target="_blank" rel="noopener" title="@${esc(u)} على إنستقرام">${esc(raw)}${IG_ICON}</a>`;
+}
 function bars(dist,hi){
   const peak=Math.max(...dist,0);
   return '<div class="bars">'+dist.map((c,i)=>{
@@ -2506,7 +2521,7 @@ function render(){
       <div class="acard">
         <div class="arow">
           <span class="rank">#${i+1}</span>
-          <span class="hname">${a.house}</span>
+          ${houseEl(a.house)}
           <span class="hcountry">${a.flag||''} ${a.country||''}</span>
           <span class="htot">${fmt(a.dist[day])} <small>بيعة ${DAYS[day]}</small></span>
         </div>
@@ -2527,7 +2542,7 @@ function render(){
     <div class="acard">
       <div class="arow">
         <span class="rank">#${i+1}</span>
-        <span class="hname">${a.house}</span>
+        ${houseEl(a.house)}
         <span class="hcountry">${a.flag||''} ${a.country||''}</span>
         <span class="htot">${fmt(a.total)} <small>بيعة</small></span>
       </div>
