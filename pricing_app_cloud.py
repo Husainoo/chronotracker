@@ -840,6 +840,29 @@ HTML = r"""<!DOCTYPE html>
   .conf.mid{background:rgba(201,162,39,.15);color:var(--gold-soft)}
   .conf.low{background:rgba(224,98,94,.15);color:var(--red)}
   .empty{text-align:center;color:var(--muted);padding:20px;font-size:14px}
+  /* قسم «مزادات اليوم» — عرض/قراءة فقط من بيانات جدول المزادات */
+  .today-sec{background:var(--surface);border:1px solid var(--line);border-radius:16px;
+    padding:18px;margin-bottom:18px}
+  .today-title{color:var(--gold-soft);font-size:14px;font-weight:700;margin-bottom:14px;
+    display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .today-day{font-family:'Space Mono',monospace;font-size:12px;color:var(--muted);font-weight:400}
+  .today-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+  .today-card{background:var(--surface2);border:1px solid var(--line);border-radius:12px;
+    padding:13px 14px;display:flex;flex-direction:column;gap:6px}
+  .tc-house{font-size:15px;font-weight:700}
+  .tc-house .hname{font-size:15px;font-weight:700;color:var(--text)}
+  .tc-house a.hname{color:var(--gold-soft);text-decoration:none;display:inline-flex;align-items:center;cursor:pointer}
+  .tc-house a.hname:hover{text-decoration:underline;text-underline-offset:3px}
+  .tc-house a.hname svg{opacity:.8;transition:opacity .15s}
+  .tc-house a.hname:hover svg{opacity:1}
+  .tc-country{font-size:12.5px;color:var(--gold-soft);font-weight:600}
+  .tc-count{font-family:'Space Mono',monospace;color:var(--gold-soft);font-weight:700;font-size:15px}
+  .tc-count small{color:var(--muted);font-size:11px;font-weight:400;font-family:'IBM Plex Sans Arabic',sans-serif}
+  .today-empty{color:var(--muted);font-size:14px;padding:6px 2px}
+  .today-note{color:var(--muted);font-size:11.5px;margin-top:12px;opacity:.85}
+  .today-all{display:inline-block;margin-top:10px;color:var(--gold-soft);font-size:12.5px;
+    font-weight:600;text-decoration:none}
+  .today-all:hover{text-decoration:underline;text-underline-offset:3px}
   .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:24px;
     font-family:'Space Mono',monospace}
 </style>
@@ -850,6 +873,13 @@ HTML = r"""<!DOCTYPE html>
   <div class="head">
     <div class="mark">CHRONOTRACKER</div>
     <h1>مُسعّر الساعات</h1>
+  </div>
+
+  <div class="today-sec" id="todaySec" style="display:none">
+    <div class="today-title">📅 مزادات اليوم <span id="todayDay" class="today-day"></span></div>
+    <div class="today-cards" id="todayCards"></div>
+    <div class="today-note">مبني على نشاط الدور المعتاد بهذا اليوم من بياناتنا — قد يختلف عن جدول الدار الرسمي.</div>
+    <a class="today-all" href="/auctions">🏛️ كل المزادات ←</a>
   </div>
 
   <div class="hot-sec" id="hotSec" style="display:none">
@@ -900,6 +930,7 @@ HTML = r"""<!DOCTYPE html>
 let selectedRef = null, activeIdx = -1, curResults = [];
 let curReq = {ref:null, cond:'Pre-owned', fs:'1', year:''};   // آخر طلب تقييم ناجح
 const $ = id => document.getElementById(id);
+/*IG_HELPERS*/
 
 function pickSeg(group){
   group.querySelectorAll('button').forEach(b=>b.onclick=()=>{
@@ -1593,6 +1624,30 @@ function autoScrollHot(t){
   }, 30);
 }
 loadHottest();
+
+// «📅 مزادات اليوم» — قراءة/عرض فقط من جدول المزادات (/api/auctions).
+// dist مرتّبة [الأحد..السبت]، و new Date().getDay() يعطي 0=الأحد..6=السبت — نفس الترتيب.
+const TODAY_DAYS=['الأحد','الإثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+async function loadTodayAuctions(){
+  let auc;
+  try{ const r=await fetch('/api/auctions'); auc=await r.json(); }catch(e){ return; }
+  if(!Array.isArray(auc)) return;
+  const day=new Date().getDay();                       // يوم الأسبوع بتوقيت جهاز المستخدم
+  const top=auc.filter(a=>a&&a.dist&&a.dist[day]>0)    // الدور النشطة هذا اليوم تحديداً
+              .sort((a,b)=>b.dist[day]-a.dist[day])    // الأكثر بيعاتٍ بهذا اليوم أولاً
+              .slice(0,3);
+  $('todayDay').textContent='· '+TODAY_DAYS[day];
+  $('todayCards').innerHTML = top.length
+    ? top.map(a=>`
+        <div class="today-card">
+          <div class="tc-house">${houseEl(a.house)}</div>
+          <div class="tc-country">${a.flag||''} ${esc(a.country||'')}</div>
+          <div class="tc-count">${fmt(a.dist[day])} <small>بيعة عادةً ${TODAY_DAYS[day]}</small></div>
+        </div>`).join('')
+    : '<div class="today-empty">ما فيه مزادات بارزة اليوم</div>';
+  $('todaySec').style.display='block';
+}
+loadTodayAuctions();
 
 autoLoadFromUrl();
 </script>
@@ -2483,17 +2538,7 @@ const $=id=>document.getElementById(id);
 const DAYS=['الأحد','الإثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
 let AUC=[];
 function fmt(n){return Number(n).toLocaleString('en-US');}
-// أيقونة إنستقرام صغيرة (currentColor — تتبع لون الرابط)
-const IG_ICON='<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-inline-start:5px;flex:0 0 auto"><rect x="2" y="2" width="20" height="20" rx="5.5"/><circle cx="12" cy="12" r="4.4"/><circle cx="17.6" cy="6.4" r="1.2" fill="currentColor" stroke="none"/></svg>';
-function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
-// اسم الدار: رابط إنستقرام لو اليوزر صالح، وإلا نص عادي (لا رابط مكسور)
-function houseEl(house){
-  const raw=String(house||'').trim();
-  const u=raw.replace(/^@+/,'').trim();              // أزل @ البادئة لو وُجدت
-  const valid=/^[A-Za-z0-9._]{1,30}$/.test(u);       // قواعد يوزر إنستقرام (حروف/أرقام/نقطة/شرطة سفلية)
-  if(!valid) return `<span class="hname">${esc(raw)}</span>`;
-  return `<a class="hname hlink" href="https://instagram.com/${encodeURIComponent(u)}" target="_blank" rel="noopener" title="@${esc(u)} على إنستقرام">${esc(raw)}${IG_ICON}</a>`;
-}
+/*IG_HELPERS*/
 function bars(dist,hi){
   const peak=Math.max(...dist,0);
   return '<div class="bars">'+dist.map((c,i)=>{
@@ -2589,9 +2634,25 @@ NAV_BAR = (
     f'<a href="/browse" style="{_NAV_PILL}">🖼️ تصفّح</a>'
     '</nav>'
 )
+# دوال إنستقرام المشتركة (اسم الدار → رابط/نص آمن). تُحقَن في صفحة المزادات والهوم
+# مكان العلامة /*IG_HELPERS*/ — دالة واحدة لا تتكرر في أكثر من صفحة.
+IG_HELPERS_JS = r"""
+// أيقونة إنستقرام صغيرة (currentColor — تتبع لون الرابط)
+const IG_ICON='<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-inline-start:5px;flex:0 0 auto"><rect x="2" y="2" width="20" height="20" rx="5.5"/><circle cx="12" cy="12" r="4.4"/><circle cx="17.6" cy="6.4" r="1.2" fill="currentColor" stroke="none"/></svg>';
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+// اسم الدار: رابط إنستقرام لو اليوزر صالح، وإلا نص عادي (لا رابط مكسور)
+function houseEl(house){
+  const raw=String(house||'').trim();
+  const u=raw.replace(/^@+/,'').trim();              // أزل @ البادئة لو وُجدت
+  const valid=/^[A-Za-z0-9._]{1,30}$/.test(u);       // قواعد يوزر إنستقرام (حروف/أرقام/نقطة/شرطة سفلية)
+  if(!valid) return `<span class="hname">${esc(raw)}</span>`;
+  return `<a class="hname hlink" href="https://instagram.com/${encodeURIComponent(u)}" target="_blank" rel="noopener" title="@${esc(u)} على إنستقرام">${esc(raw)}${IG_ICON}</a>`;
+}
+"""
 for _pg in ('HTML', 'FAV_HTML', 'BROWSE_HTML', 'DEALS_HTML', 'HOT_HTML', 'BUDGET_HTML',
             'MARKET_HTML', 'LATEST_HTML', 'AUCTIONS_HTML'):
     globals()[_pg] = globals()[_pg].replace('<!--NAV-->', NAV_BAR)
+    globals()[_pg] = globals()[_pg].replace('/*IG_HELPERS*/', IG_HELPERS_JS)
 
 
 # ========================
