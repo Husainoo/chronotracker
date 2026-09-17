@@ -83,56 +83,112 @@ def save_memory(memory):
 memory = load_memory()
 
 # ====== Tools (Function Calling)
+import re as _re
+
+# لاحقة المتغيّر (الميناء/السوار) في مراجع رولكس الحديثة: 126710BLNR-0002
+_SUFFIX_RE = _re.compile(r'^(.+?)-([0-9A-Za-z]{2,4})$')
+
+# نفس تحويل الموقع (pricing_app_cloud): أي شيء يبدأ بـ Unworn = غير مستخدمة، وإلا مستخدمة.
+def normalize_condition(cond) -> str:
+    c = str(cond or '').strip()
+    low = c.lower()
+    if low.startswith('unworn') or low in ('new', 'brand new') or 'غير مستخدم' in c or 'جديد' in c:
+        return 'Unworn'
+    return 'Pre-owned'
+
+
+def _norm_ref(reference) -> str:
+    return _re.sub(r'\s+', '', str(reference or '')).upper()
+
+
+def _variant_info(ref: str) -> dict:
+    """اسم/سوار/ميناء المتغيّر من البيانات (الأكثر تكراراً) + عدد الصفقات."""
+    sub = ENGINE.sold[ENGINE.sold['referance'] == ref]
+
+    def _mode(col):
+        if col not in sub.columns:
+            return ''
+        s = sub[col].dropna().astype(str).str.strip()
+        s = s[s != '']
+        return s.mode().iloc[0] if len(s) else ''
+
+    return {'reference': ref, 'n': int(len(sub)), 'nick': _mode('nickName'),
+            'bracelet': _mode('braceletMaterial'), 'dial': _mode('dialColor'),
+            'brand': _mode('brand'), 'model': _mode('model')}
+
+
+def resolve_reference(reference: str) -> dict:
+    """يحوّل ما كتبه المستخدم إلى مرجع كامل موجود في البيانات — بدون تخمين.
+
+    يرجّع:
+      {'status': 'exact',     'reference': 'X'}                 تطابق حرفي
+      {'status': 'single',    'reference': 'X', 'typed': 'Y'}   جذع له متغيّر واحد فقط
+      {'status': 'ambiguous', 'typed': 'Y', 'variants': [...]}  جذع له عدة متغيّرات — يُسأل المستخدم
+      {'status': 'none',      'typed': 'Y'}                     لا شيء
+    """
+    typed = _norm_ref(reference)
+    if not typed:
+        return {'status': 'none', 'typed': typed}
+    refs = ENGINE.sold['referance'].dropna().astype(str).unique().tolist()
+    by_upper = {}
+    for r in refs:
+        by_upper.setdefault(_norm_ref(r), r)
+    if typed in by_upper:
+        return {'status': 'exact', 'reference': by_upper[typed]}
+    # المستخدم كتب الجذع فقط (بدون لاحقة) → كل المراجع التي جذعها = المكتوب
+    variants = []
+    for up, orig in by_upper.items():
+        m = _SUFFIX_RE.match(up)
+        if m and m.group(1) == typed:
+            variants.append(orig)
+    if not variants:
+        return {'status': 'none', 'typed': typed}
+    infos = sorted((_variant_info(v) for v in variants), key=lambda d: d['reference'])
+    if len(infos) == 1:
+        return {'status': 'single', 'reference': infos[0]['reference'], 'typed': typed,
+                'variants': infos}
+    return {'status': 'ambiguous', 'typed': typed, 'variants': infos}
+
+
+def _variant_line(v: dict) -> str:
+    bits = [b for b in (v.get('nick'), v.get('bracelet'), v.get('dial')) if b]
+    desc = ' · '.join(bits) if bits else f"{v.get('brand','')} {v.get('model','')}".strip()
+    return f"• {v['reference']} — {desc} ({v['n']} صفقة)"
+
+
 def search_watches(query: str) -> str:
     """البحث عن موديلات الساعات."""
     try:
-        # البحث في البيانات
-        results = []
-        for _, row in ENGINE.sold.iterrows():
-            search_text = f"{row['referance']} {row['brand']} {row['model']}".lower()
-            if query.lower() in search_text:
-                results.append({
-                    'reference': row['referance'],
-                    'brand': row['brand'],
-                    'model': row['model'],
-                    'count': 1
-                })
-        
-        # دمج النتائج (عد التكرارات)
-        grouped = {}
-        for r in results:
-            key = r['reference']
-            if key not in grouped:
-                grouped[key] = r
-            grouped[key]['count'] += 1
-        
-        if not grouped:
+        q = query.lower().strip()
+        s = ENGINE.sold
+        text = (s['referance'].astype(str) + ' ' + s['brand'].astype(str) + ' ' +
+                s['model'].astype(str) + ' ' + s['nickName'].astype(str)).str.lower()
+        hits = s[text.str.contains(q, regex=False, na=False)]
+        if hits.empty:
             return f"🔍 لم أجد ساعات تطابق '{query}'"
-        
-        output = f"🔍 وجدت {len(grouped)} موديل:\n"
-        for ref, item in list(grouped.items())[:5]:
-            output += f"• {ref} — {item['brand']} {item['model']} ({item['count']} صفقة)\n"
+        refs = hits['referance'].value_counts().index.tolist()
+        output = f"🔍 وجدت {len(refs)} موديل:\n"
+        for ref in refs[:8]:
+            output += _variant_line(_variant_info(ref)) + "\n"
+        if len(refs) > 8:
+            output += f"… و{len(refs) - 8} أخرى.\n"
         return output
     except Exception as e:
         return f"❌ خطأ في البحث: {e}"
 
-def evaluate_watch(reference: str, year: int = 2020, condition: str = "Pre-owned", 
-                   full_set: bool = False) -> str:
-    """تقييم سعر الساعة."""
-    try:
-        result = ENGINE.evaluate(reference, year, condition, full_set)
 
-        if not result.get('ok'):
-            return f"❌ {result.get('msg', 'تعذّر التقييم')}"
-
-        # آخر بيعة فعلية = أحدث إدراج مُباع في السجل
-        last_sale = next((s['price'] for s in result.get('recent_sales', [])
-                          if s.get('sold')), None)
-        last_sale_txt = f"{last_sale:,.0f} د.ك" if last_sale is not None else 'بلا بيانات'
-        trend = result.get('trend')
-        trend_txt = f"{trend*100:+.1f}%" if trend is not None else 'مستقر'
-
-        output = f"""
+def _format_eval(result: dict, compact: bool = False) -> str:
+    """صياغة نتيجة المحرك. المرجع الكامل يظهر دائماً."""
+    last_sale = next((s['price'] for s in result.get('recent_sales', [])
+                      if s.get('sold')), None)
+    last_sale_txt = f"{last_sale:,.0f} د.ك" if last_sale is not None else 'بلا بيانات'
+    trend = result.get('trend')
+    trend_txt = f"{trend*100:+.1f}%" if trend is not None else 'مستقر'
+    if compact:
+        return (f"• {result['reference']}: العادل {result['fair']:,.0f} د.ك "
+                f"(النطاق {result['low']:,.0f}–{result['high']:,.0f}) · "
+                f"آخر بيعة {last_sale_txt} · الثقة {result['confidence']}")
+    return f"""
 📊 تقييم {result['reference']}
 {'='*40}
 💰 السعر العادل: {result['fair']:,.0f} د.ك
@@ -141,18 +197,77 @@ def evaluate_watch(reference: str, year: int = 2020, condition: str = "Pre-owned
 📅 آخر بيعة: {last_sale_txt}
 🔄 الاتجاه: {trend_txt}
 """
-        return output
+
+
+def evaluate_watch(reference: str, year=None, condition: str = "Pre-owned",
+                   full_set: bool = True, compare_variants: bool = False) -> str:
+    """تقييم سعر الساعة — بنفس افتراضيات الموقع (Full Set، بدون سنة ما لم تُذكر).
+
+    لو المرجع بدون لاحقة وله عدة متغيّرات: لا نخمّن. نرجّع قائمة المتغيّرات
+    ليسأل المساعد المستخدم، أو (compare_variants=True) تقييم مختصر لكل متغيّر.
+    """
+    try:
+        cond = normalize_condition(condition)
+        try:
+            year = int(year) if year not in (None, '', 0, '0') else None
+        except (TypeError, ValueError):
+            year = None
+        full_set = bool(full_set)
+
+        res = resolve_reference(reference)
+        if res['status'] == 'none':
+            return f"❌ لا توجد مبيعات للمرجع {res['typed']}. جرّب search_watches أو تأكد من المرجع."
+
+        if res['status'] == 'ambiguous':
+            lines = "\n".join(_variant_line(v) for v in res['variants'])
+            if not compare_variants:
+                return (f"⚠️ المرجع {res['typed']} له {len(res['variants'])} متغيّرات في البيانات "
+                        f"وأسعارها تختلف. لا تخمّن — اسأل المستخدم أي واحد يقصد:\n{lines}\n"
+                        f"(لو طلب المقارنة صراحةً، أعد الاستدعاء بـ compare_variants=true)")
+            out = [f"📊 مقارنة متغيّرات {res['typed']} "
+                   f"({'غير مستخدمة' if cond == 'Unworn' else 'مستخدمة'}"
+                   f"{' · ' + str(year) if year else ''}{' · Full Set' if full_set else ' · بدون علبة/أوراق'}):"]
+            for v in res['variants']:
+                r = ENGINE.evaluate(v['reference'], year, cond, full_set)
+                if r.get('ok'):
+                    out.append(_format_eval(r, compact=True) +
+                               (f" — {v['nick']}/{v['bracelet']}" if v.get('nick') or v.get('bracelet') else ''))
+                else:
+                    out.append(f"• {v['reference']}: ❌ {r.get('msg', 'تعذّر التقييم')}")
+            return "\n".join(out)
+
+        ref = res['reference']
+        result = ENGINE.evaluate(ref, year, cond, full_set)
+        if not result.get('ok'):
+            return f"❌ {result.get('msg', 'تعذّر التقييم')}"
+
+        note = ''
+        if res['status'] == 'single':
+            v = res['variants'][0]
+            note = (f"ℹ️ كتب المستخدم {res['typed']} — المتغيّر الوحيد في البيانات هو "
+                    f"{ref} ({v.get('nick') or ''} {v.get('bracelet') or ''}).\n".replace('( )', ''))
+        params = (f"المعطيات: {'غير مستخدمة' if cond == 'Unworn' else 'مستخدمة'}"
+                  f"{' · ' + str(year) if year else ' · بدون سنة محددة'}"
+                  f"{' · Full Set' if full_set else ' · بدون علبة/أوراق'}")
+        return note + _format_eval(result) + params + "\n"
     except Exception as e:
         return f"❌ خطأ في التقييم: {e}"
 
 def get_market_trend(reference: str) -> str:
     """الاتجاه العام للسوق (آخر بيعات)."""
     try:
+        res = resolve_reference(reference)
+        if res['status'] == 'ambiguous':
+            lines = "\n".join(_variant_line(v) for v in res['variants'])
+            return (f"⚠️ المرجع {res['typed']} له عدة متغيّرات — اسأل المستخدم أي واحد يقصد:\n{lines}")
+        if res['status'] == 'none':
+            return f"❌ لا توجد بيعات سابقة لـ {res['typed']}"
+        reference = res['reference']
         sales = ENGINE.sold[ENGINE.sold['referance'] == reference].sort_values('priceDate', ascending=False).head(5)
-        
+
         if sales.empty:
             return f"❌ لا توجد بيعات سابقة لـ {reference}"
-        
+
         output = f"📈 آخر 5 بيعات لـ {reference}:\n"
         for _, row in sales.iterrows():
             date = row['priceDate'].strftime('%Y-%m-%d') if hasattr(row['priceDate'], 'strftime') else 'N/A'
@@ -180,26 +295,33 @@ TOOLS = [
     },
     {
         "name": "evaluate_watch",
-        "description": "تقييم السعر العادل لساعة معينة بناءً على المرجع والسنة والحالة",
+        "description": ("تقييم السعر العادل لساعة معينة. المرجع قد يكون كاملاً (126710BLNR-0002) "
+                        "أو جذعاً بدون لاحقة (126710BLNR). لو للجذع عدة متغيّرات ترجع الأداة قائمتها "
+                        "ولا تقيّم — اسأل المستخدم أي متغيّر، ولا تخمّن. لو طلب المستخدم المقارنة "
+                        "صراحةً مرّر compare_variants=true. لا تمرّر سنة إلا لو ذكرها المستخدم."),
         "input_schema": {
             "type": "object",
             "properties": {
                 "reference": {
                     "type": "string",
-                    "description": "مرجع الساعة (مثال: 116610)"
+                    "description": "مرجع الساعة كما كتبه المستخدم (مثال: 126710BLNR أو 126710BLNR-0002)"
                 },
                 "year": {
                     "type": "integer",
-                    "description": "سنة الصنع (الافتراضية: 2020)"
+                    "description": "سنة الصنع — فقط لو ذكرها المستخدم. لا تفترض سنة."
                 },
                 "condition": {
                     "type": "string",
-                    "description": "حالة الساعة: Unworn, Pre-owned Like New, Pre-owned, Brass",
-                    "enum": ["Unworn", "Pre-owned Like New", "Pre-owned", "Brass"]
+                    "description": "Unworn = غير مستخدمة/جديدة، Pre-owned = مستخدمة (الافتراضي)",
+                    "enum": ["Unworn", "Pre-owned"]
                 },
                 "full_set": {
                     "type": "boolean",
-                    "description": "هل تملك Full Set (الكرتونة + الأوراق)"
+                    "description": "علبة + أوراق. الافتراضي true (مثل الموقع) ما لم يقل المستخدم غير ذلك."
+                },
+                "compare_variants": {
+                    "type": "boolean",
+                    "description": "true فقط لو طلب المستخدم صراحةً مقارنة متغيّرات المرجع (مثل Jubilee مقابل Oyster)."
                 }
             },
             "required": ["reference"]
@@ -228,9 +350,10 @@ def process_tool_call(tool_name: str, tool_input: dict) -> str:
     elif tool_name == "evaluate_watch":
         return evaluate_watch(
             tool_input['reference'],
-            tool_input.get('year', 2020),
+            tool_input.get('year'),                       # بدون سنة افتراضية (مثل الموقع)
             tool_input.get('condition', 'Pre-owned'),
-            tool_input.get('full_set', False)
+            tool_input.get('full_set', True),             # Full Set افتراضياً (مثل الموقع)
+            tool_input.get('compare_variants', False),
         )
     elif tool_name == "get_market_trend":
         return get_market_trend(tool_input['reference'])
@@ -243,6 +366,13 @@ SYSTEM_PROMPT = """أنت مستشار متخصص في الساعات الفاخ
 - تحلل بيانات الأسعار والسوق بدقة
 - تعطي رأي استثماري مبني على الحقائق
 - تستخدم الأدوات المتاحة للبحث والتقييم
+- قواعد التقييم (إلزامية):
+  • لو المرجع بدون لاحقة وله عدة متغيّرات (مثل 126710BLNR → -0002 Jubilee و -0003 Oyster) لا تخمّن أبداً:
+    اعرض المتغيّرات كما رجّعتها الأداة (المرجع الكامل + الاسم/السوار) واسأل المستخدم أيها يقصد.
+    استثناء: لو طلب المقارنة صراحةً، استدعِ evaluate_watch بـ compare_variants=true واعرض النتائج.
+  • كل رد فيه تقييم يذكر المرجع الكامل الذي تم تقييمه (مثل 126710BLNR-0002) والمعطيات (الحالة/السنة/Full Set).
+  • لا تفترض سنة صنع؛ مرّر السنة فقط لو ذكرها المستخدم. Full Set هو الافتراضي ما لم يقل غير ذلك.
+  • الحالة إما Unworn (غير مستخدمة/جديدة) أو Pre-owned (مستخدمة) فقط.
 - إجابات مختصرة وعملية، بدون إطالة
 - تتذكر سياق المحادثة
 - لو وصلتك صورة ساعة: تعرّف على الموديل والمرجع (reference) منها، ثم استخدم أدواتك للبحث والتقييم. لو الصورة غير واضحة أو فيها أكثر من احتمال، اطلب توضيحاً أو اعطِ أقرب تطابق ووضّح أنه تقديري."""
