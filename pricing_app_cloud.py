@@ -9,7 +9,7 @@ APP_PASSWORD، ومتغيّرات البيئة CSV_PATH / IMAGES_PATH / PORT / A
 قائمة سنة منسدلة + أزرار الحالة/Full Set + لوحة نتيجة كاملة + رسم/جداول/مواصفات.
 """
 
-import json, sys, os, hashlib, base64, math
+import json, sys, os, hashlib, base64, math, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote, unquote
 
@@ -55,7 +55,19 @@ CSV_PATH = os.getenv('CSV_PATH', 'chronotracker_complete_v2.csv')
 DISC_CSV = os.getenv('DISC_CSV', 'discontinued_rolex.csv')
 IMAGES_DIR = os.getenv('IMAGES_PATH', 'images')
 LOGOS_DIR = os.getenv('LOGOS_PATH', 'logos')
-FAVORITES_FILE = 'favorites.json'
+# المفضّلة: على Render تُحفظ على القرص الدائم (/var/data — انظر render.yaml) حتى لا
+# تُمسح مع كل إعادة نشر (نظام الملفات مؤقت ويُعاد من git يومياً مع تحديث البيانات).
+# محلياً يُستخدم favorites.json في جذر المشروع. ملف الجذر هو «بذرة» فقط: يُنسخ
+# للقرص الدائم في أول تشغيل إن لم يكن هناك ملف بعد.
+FAVORITES_SEED = 'favorites.json'
+def _resolve_favorites_path():
+    p = os.getenv('FAVORITES_PATH', '').strip()
+    if p and os.path.isdir(os.path.dirname(p) or '.'):
+        return p
+    if p:
+        print(f"⚠️  FAVORITES_PATH={p} — المجلد غير موجود، سيُستخدم {FAVORITES_SEED} (غير دائم على Render!)")
+    return FAVORITES_SEED
+FAVORITES_FILE = _resolve_favorites_path()
 
 # المحرك والفهرس ثقيلان — يُحمّلان في boot() بعد فتح المنفذ مباشرة (انظر __main__).
 # هكذا يكتشف Render المنفذ خلال مللي ثانية حتى لو كان التحميل بطيئاً على free tier.
@@ -289,20 +301,46 @@ def image_file_for(ref):
         return '/images/' + quote(safe + '.jpg')
     return None
 
+_FAV_LOCK = threading.Lock()
+
+def _read_fav_file(path):
+    try:
+        data = json.load(open(path, encoding='utf-8'))
+    except Exception:
+        return None
+    if not isinstance(data, list):
+        return None
+    out = []
+    for x in data:
+        x = str(x).strip()
+        if x and x not in out:
+            out.append(x)
+    return out
+
 def load_favorites():
-    if os.path.isfile(FAVORITES_FILE):
-        try:
-            return json.load(open(FAVORITES_FILE, encoding='utf-8'))
-        except Exception:
-            pass
-    return []
+    favs = _read_fav_file(FAVORITES_FILE) if os.path.isfile(FAVORITES_FILE) else None
+    if favs is None:
+        # أول تشغيل على القرص الدائم: نزرع من ملف الريبو ثم نحفظ نسخة دائمة
+        favs = []
+        if FAVORITES_FILE != FAVORITES_SEED and os.path.isfile(FAVORITES_SEED):
+            favs = _read_fav_file(FAVORITES_SEED) or []
+            print(f"⭐ زرع المفضّلة من {FAVORITES_SEED} → {FAVORITES_FILE} ({len(favs)})")
+        save_favorites(favs)
+    return favs
 
 def save_favorites(favs):
+    # كتابة ذرّية (ملف مؤقت ثم استبدال) مع قفل — gunicorn يعمل بعدة خيوط
     try:
-        json.dump(favs, open(FAVORITES_FILE, 'w', encoding='utf-8'),
-                  ensure_ascii=False, indent=2)
+        with _FAV_LOCK:
+            tmp = FAVORITES_FILE + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(list(favs), f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, FAVORITES_FILE)
         return True
-    except Exception:
+    except Exception as e:
+        print(f"⚠️  فشل حفظ المفضّلة في {FAVORITES_FILE}: {e}")
         return False
 
 def fav_list_detailed():
@@ -923,7 +961,7 @@ HTML = r"""<!DOCTYPE html>
 
   <div class="card result-card" id="out"></div>
 
-  <div class="foot">localhost · بياناتك تبقى على جهازك</div>
+  <div class="foot">⭐ المفضّلة محفوظة في حسابك على الخادم · تظهر على كل أجهزتك</div>
 </div>
 
 <script>
@@ -1467,13 +1505,32 @@ function render(d, yearRows){
 
 // ===== المفضّلة =====
 let favCache = null;
+// نسخة احتياطية محلية (localStorage) من قائمة الخادم — الخادم هو المصدر الرسمي.
+// تُستخدم فقط لاستعادة القائمة للخادم لو رجع فاضياً (مثلاً بعد مسح القرص).
+const FAV_LS_KEY = 'ct_favs_backup';
+function favBackupRead(){ try{ const v=JSON.parse(localStorage.getItem(FAV_LS_KEY)||'[]'); return Array.isArray(v)?v:[]; }catch(e){ return []; } }
+function favBackupWrite(list){ try{ localStorage.setItem(FAV_LS_KEY, JSON.stringify(list)); }catch(e){} }
+async function fetchServerFavs(){
+  const r = await fetch('/api/favorites');
+  if(!r.ok) throw new Error('favorites '+r.status);
+  const list = await r.json();
+  return list.map(x=>x.ref);
+}
 async function loadFavCache(){
   if(favCache) return favCache;
   try{
-    const r = await fetch('/api/favorites');
-    const list = await r.json();
-    favCache = list.map(x=>x.ref);
-  }catch(e){ favCache = []; }
+    let favs = await fetchServerFavs();
+    const backup = favBackupRead();
+    if(!favs.length && backup.length){
+      // الخادم فاضي والمتصفح عنده نسخة → نرفعها مرة واحدة
+      const r = await fetch('/api/fav',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'merge',refs:backup})});
+      const d = await r.json();
+      if(d && Array.isArray(d.refs)) favs = d.refs;
+    }
+    favBackupWrite(favs);
+    favCache = favs;
+  }catch(e){ favCache = favBackupRead(); }
   return favCache;
 }
 async function syncFavBtn(){
@@ -1497,10 +1554,12 @@ async function toggleFav(btn){
     const r = await fetch('/api/fav',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action,ref})});
     const d = await r.json();
-    // نحدّث الكاش
-    if(action==='add' && !favs.includes(ref)) favs.push(ref);
-    if(action==='remove') favCache = favs.filter(x=>x!==ref);
-    setFavBtnState(btn, action==='add');
+    if(!r.ok || !d || d.ok===false) throw new Error('save failed');
+    // نحدّث الكاش والنسخة الاحتياطية من رد الخادم
+    favCache = Array.isArray(d.refs) ? d.refs
+             : (action==='add' ? [...favs, ref] : favs.filter(x=>x!==ref));
+    favBackupWrite(favCache);
+    setFavBtnState(btn, favCache.includes(ref));
     toast(action==='add'?'✓ تمت الإضافة للمفضّلة':'أُزيلت من المفضّلة');
   }catch(e){ toast('خطأ في الحفظ'); }
 }
@@ -1711,17 +1770,32 @@ FAV_HTML = r"""<!DOCTYPE html>
     <p>الساعات اللي تتابعها — اضغط أي ساعة لتفاصيلها وتسعيرها</p>
   </div>
   <div id="grid"></div>
-  <div class="foot">localhost · بياناتك تبقى على جهازك</div>
+  <div class="foot">⭐ المفضّلة محفوظة في حسابك على الخادم · تظهر على كل أجهزتك</div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
 
+const FAV_LS_KEY = 'ct_favs_backup';
+function favBackupRead(){ try{ const v=JSON.parse(localStorage.getItem(FAV_LS_KEY)||'[]'); return Array.isArray(v)?v:[]; }catch(e){ return []; } }
+function favBackupWrite(list){ try{ localStorage.setItem(FAV_LS_KEY, JSON.stringify(list)); }catch(e){} }
+async function fetchFavList(){
+  const r = await fetch('/api/favorites');
+  if(!r.ok) throw new Error('favorites '+r.status);
+  return await r.json();
+}
 async function loadFavs(){
   const grid = $('grid');
   try{
-    const r = await fetch('/api/favorites');
-    const list = await r.json();
+    let list = await fetchFavList();
+    const backup = favBackupRead();
+    if(!list.length && backup.length){
+      // الخادم فاضي والمتصفح عنده نسخة احتياطية → نرفعها مرة واحدة ثم نعيد القراءة
+      await fetch('/api/fav',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'merge',refs:backup})});
+      list = await fetchFavList();
+    }
+    favBackupWrite(list.map(w=>w.ref));
     if(!list.length){
       grid.innerHTML = `<div class="empty"><div class="big">⭐</div>
         ما عندك ساعات في المفضّلة بعد.<br>
@@ -1746,8 +1820,10 @@ async function loadFavs(){
 function goTo(ref){ location.href = '/?ref=' + ref; }
 async function removeFav(ref){
   try{
-    await fetch('/api/fav',{method:'POST',headers:{'Content-Type':'application/json'},
+    const r = await fetch('/api/fav',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:'remove',ref:decodeURIComponent(ref)})});
+    const d = await r.json();
+    if(d && Array.isArray(d.refs)) favBackupWrite(d.refs);
     loadFavs();
   }catch(e){}
 }
@@ -2833,14 +2909,26 @@ class RequestHandler(BaseHTTPRequestHandler):
             action = body.get('action', '')
             ref = str(body.get('ref', '')).strip()
             favs = load_favorites()
+            ok = True
             if action == 'add' and ref and ref not in favs:
                 favs.append(ref)
-                save_favorites(favs)
+                ok = save_favorites(favs)
             elif action == 'remove' and ref in favs:
                 favs.remove(ref)
-                save_favorites(favs)
-            self._send(200, jdumps({'ok': True, 'count': len(favs),
-                                        'is_fav': ref in favs}, ensure_ascii=False))
+                ok = save_favorites(favs)
+            elif action == 'merge':
+                # استعادة/دمج قائمة من المتصفح (نسخة localStorage الاحتياطية) — إضافة فقط
+                refs = body.get('refs') or []
+                added = 0
+                for r in refs if isinstance(refs, list) else []:
+                    r = str(r).strip()
+                    if r and r not in favs:
+                        favs.append(r); added += 1
+                if added:
+                    ok = save_favorites(favs)
+            self._send(200, jdumps({'ok': ok, 'count': len(favs),
+                                        'is_fav': ref in favs,
+                                        'refs': favs}, ensure_ascii=False))
         else:
             self._send(404, jdumps({'error': 'not found'}))
 

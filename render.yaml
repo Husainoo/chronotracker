@@ -14,11 +14,21 @@ services:
     # المحرك يُحمَّل مرة في الـ master مع --preload) + 4 خيوط حتى لا يجمّد
     # طلب بطيء فحص Render الصحي. التطبيق يصدّر WSGI app (محوّل فوق المعالج).
     startCommand: gunicorn pricing_app_cloud:app --workers 1 --threads 4 --timeout 120 --preload --bind 0.0.0.0:$PORT
+    # قرص دائم للمفضّلة: نظام ملفات Render مؤقت ويُعاد بناؤه من git مع كل نشر
+    # (يومياً مع تحديث البيانات) — أي مفضّلة تُضاف من الموقع كانت تُمسح.
+    # القرص يبقى عبر عمليات النشر وإعادة التشغيل. (1GB ≈ $0.25/شهر؛ يعطّل
+    # النشر بدون توقّف — انقطاع ثوانٍ عند كل نشر، مقبول.)
+    disk:
+      name: chronotracker-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
       - key: APP_PASSWORD
         sync: false        # أدخلها في لوحة Render
+      - key: FAVORITES_PATH
+        value: /var/data/favorites.json
       - key: CSV_PATH
         value: chronotracker_complete_v2.csv
       - key: DISC_CSV
