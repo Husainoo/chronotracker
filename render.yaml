@@ -44,6 +44,13 @@ services:
     plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: python telegram_bot.py
+    # قرص دائم لحالة تنبيه المفضّلة (favorites_alerts.json) — حتى لا تتكرر
+    # التنبيهات بعد كل إعادة نشر (نظام الملفات مؤقت). قرص منفصل عن قرص الويب:
+    # الأقراص لا تُشارَك بين الخدمات، لذا يجلب البوت المفضّلة عبر واجهة الموقع.
+    disk:
+      name: chronotracker-bot-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
@@ -57,3 +64,17 @@ services:
         value: chronotracker_complete_v2.csv
       - key: DISC_CSV
         value: discontinued_rolex.csv
+      # تنبيه المفضّلة اليومي: يجلب المفضّلة من خدمة الويب بنفس كلمة سر الموقع
+      - key: APP_PASSWORD
+        sync: false        # نفس قيمة APP_PASSWORD في chronotracker-web
+      - key: WEB_HOST
+        fromService:
+          type: web
+          name: chronotracker-web
+          property: host
+      - key: BOT_DATA_DIR
+        value: /var/data
+      - key: ALERT_TZ
+        value: Asia/Kuwait
+      - key: ALERT_HOUR
+        value: "19"
