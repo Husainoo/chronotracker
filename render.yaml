@@ -70,11 +70,10 @@ services:
           type: web
           name: chronotracker-web
           envVarKey: APP_PASSWORD
-      - key: WEB_HOST
-        fromService:
-          type: web
-          name: chronotracker-web
-          property: host
+      # عنوان الموقع العام (fromService/host يعطي الاسم الداخلي chronotracker-web
+      # غير القابل للوصول عبر HTTPS — لذا نثبّت العنوان العام صراحة)
+      - key: WEB_BASE_URL
+        value: https://chronotracker-web.onrender.com
       - key: BOT_DATA_DIR
         value: /var/data
       - key: ALERT_TZ
