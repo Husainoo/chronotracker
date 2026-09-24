@@ -580,6 +580,11 @@ ALERT_MINUTE = int(os.getenv('ALERT_MINUTE', '0'))
 # معرّفات المزادات لا تتزايد مع التاريخ (مزاد طويل يحمل معرّفاً أقدم)، لذا لا يصلح
 # «أكبر معرّف» كعلامة مائية — نقارن بمجموعة المعرّفات المشاهَدة.
 ALERT_WINDOW_DAYS = 180
+# ساعة تدخل المفضّلة لأول مرة (لا حالة سابقة): أول فحص يعرض إدراجات آخر N يوم
+# بدل التثبيت الصامت — حتى يرى المستخدم شيئاً مفيداً فوراً.
+ALERT_FIRST_DAYS = int(os.getenv('ALERT_FIRST_DAYS', '7'))
+# رقم إصدار الحالة: تغييره يعيد ضبط «آخر ما شُوهد» لكل المراجع مرة واحدة (v2: إلغاء التثبيت الصامت)
+ALERT_STATE_VERSION = 2
 _ALERT_LOCK = threading.Lock()
 
 
@@ -592,10 +597,13 @@ def load_alert_state():
         st = json.load(open(ALERT_STATE_FILE, encoding='utf-8'))
         if isinstance(st, dict):
             st.setdefault('refs', {})
+            if st.get('v') != ALERT_STATE_VERSION:
+                st['refs'] = {}          # إعادة ضبط لمرة واحدة عند ترقية صيغة الحالة
+                st['v'] = ALERT_STATE_VERSION
             return st
     except Exception:
         pass
-    return {'refs': {}, 'last_daily': None}
+    return {'refs': {}, 'last_daily': None, 'v': ALERT_STATE_VERSION}
 
 
 def save_alert_state(st):
@@ -716,8 +724,8 @@ def find_new_listings(favs, state, preview_days=None):
         if preview_days is not None:
             new = sub[sub['priceDate'] >= latest - timedelta(days=preview_days)]
         elif prev is None:
-            # مرجع جديد في المفضّلة: نثبّت الحالة بصمت — التنبيهات لما يأتي بعده فقط
-            continue
+            # مرجع جديد في المفضّلة: أول تنبيه يعرض إدراجات آخر ALERT_FIRST_DAYS يوم
+            new = sub[sub['priceDate'] >= latest - timedelta(days=ALERT_FIRST_DAYS)]
         else:
             known = set(prev.get('seen', []))
             new = in_win[~in_win['auctionWatchId'].isin(known)]
