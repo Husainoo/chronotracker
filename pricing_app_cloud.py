@@ -319,7 +319,14 @@ def _read_fav_file(path):
     return out
 
 def load_favorites():
-    favs = _read_fav_file(FAVORITES_FILE) if os.path.isfile(FAVORITES_FILE) else None
+    if os.path.isfile(FAVORITES_FILE):
+        favs = _read_fav_file(FAVORITES_FILE)
+        if favs is None:
+            # ملف موجود لكن غير مقروء (تلف/كتابة ناقصة): لا نكتب فوقه بالبذرة أبداً
+            print(f"⚠️  تعذّر قراءة {FAVORITES_FILE} — لن يُستبدل؛ أصلحه يدوياً")
+            return []
+        return favs
+    favs = None
     if favs is None:
         # أول تشغيل على القرص الدائم: نزرع من ملف الريبو ثم نحفظ نسخة دائمة
         favs = []
