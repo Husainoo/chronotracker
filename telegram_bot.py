@@ -791,6 +791,33 @@ def run_favorites_check(chat_ids=None, preview_days=None, dry_run=False, notify_
         return msgs
 
 
+def _startup_selftest():
+    """مرة واحدة فقط (علم في ملف الحالة الدائم): يتأكد أن جلب المفضّلة من الموقع يعمل
+    ويرسل تأكيداً على تلقرام. لو فشل الجلب يرسل تحذيراً ولا يثبّت العلم (يعيد المحاولة
+    عند الإقلاع التالي). تكرار رسالة «جاهز» بعد كل نشر يعني أن القرص الدائم غير مركّب."""
+    try:
+        st = load_alert_state()
+        if st.get('setup_notified'):
+            return
+        favs = fetch_favorites()
+        persistent = os.path.abspath(BOT_DATA_DIR) != os.path.abspath('.')
+        if favs is None:
+            msg = (f"⚠️ تنبيه المفضّلة: تعذّر جلب المفضّلة من الموقع ({WEB_BASE_URL or 'بلا عنوان'}). "
+                   f"تأكد من APP_PASSWORD و WEB_HOST في خدمة البوت على Render.")
+            for c in ALLOWED_USER_IDS:
+                send_message(c, msg)
+            return
+        msg = (f"✅ تنبيه المفضّلة جاهز — {len(favs)} ساعة في المفضّلة. "
+               f"التنبيه اليومي {ALERT_HOUR:02d}:{ALERT_MINUTE:02d} بتوقيت الكويت"
+               + ("" if persistent else " (⚠️ الحالة غير دائمة — لا قرص مركّب)")
+               + ". للتجربة: /favorites_check 7")
+        ok = all(send_message(c, msg) for c in ALLOWED_USER_IDS)
+        if ok:
+            st = load_alert_state(); st['setup_notified'] = _alert_now().strftime('%Y-%m-%d'); save_alert_state(st)
+    except Exception as e:
+        logger.error(f"❌ فحص الإقلاع لتنبيه المفضّلة: {_redact(e)}")
+
+
 def _next_alert_time(now):
     t = now.replace(hour=ALERT_HOUR, minute=ALERT_MINUTE, second=0, microsecond=0)
     if t <= now:
@@ -805,6 +832,7 @@ def favorites_alert_scheduler():
     طازجة قبل 19:00 بمسافة أمان. لو أُعيد تشغيل البوت بعد الموعد (نشر متأخر)
     نعوّض الفحص فوراً مرة واحدة (last_daily يمنع التكرار في نفس اليوم)."""
     _time.sleep(60)   # مهلة بعد الإقلاع
+    _startup_selftest()
     while True:
         try:
             now = _alert_now()

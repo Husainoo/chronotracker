@@ -65,8 +65,11 @@ services:
       - key: DISC_CSV
         value: discontinued_rolex.csv
       # تنبيه المفضّلة اليومي: يجلب المفضّلة من خدمة الويب بنفس كلمة سر الموقع
-      - key: APP_PASSWORD
-        sync: false        # نفس قيمة APP_PASSWORD في chronotracker-web
+      - key: APP_PASSWORD  # تُنسخ تلقائياً من خدمة الويب (نفس كلمة سر الموقع)
+        fromService:
+          type: web
+          name: chronotracker-web
+          envVarKey: APP_PASSWORD
       - key: WEB_HOST
         fromService:
           type: web

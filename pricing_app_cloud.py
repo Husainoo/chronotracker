@@ -2722,6 +2722,11 @@ class RequestHandler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         path = u.path
 
+        # فحص صحة بلا مصادقة (لا يكشف بيانات): هل المفضّلة على قرص دائم؟
+        if path == '/healthz':
+            return self._send(200, jdumps({'ok': True,
+                                           'favorites_persistent': FAVORITES_FILE != FAVORITES_SEED,
+                                           'favorites_count': len(load_favorites())}))
         # بوابة الحماية
         if path == '/login':
             return self._send_login()
