@@ -44,6 +44,7 @@ try:
     import pandas as pd
     from watch_engine import WatchValuationEngine
     import fair_then
+    import variants
 except Exception as e:
     sys.exit(f"⚠️  خطأ في التحميل: {e}\nتأكد إن watch_engine.py و pandas موجودين.")
 
@@ -256,6 +257,12 @@ def boot():
         AUCTIONS = build_auctions_table()
     except Exception:
         AUCTIONS = []
+
+    # «خيارات أخرى لنفس الساعة» — فهرس حقول كل مرجع داخل عائلته (عرض فقط)
+    try:
+        variants.build(ENGINE, image_file_for)
+    except Exception:
+        pass
 
     print(f"✓ جاهز — {len(ENGINE.sold):,} صفقة، {len(SEARCH_INDEX):,} موديل قابل للتسعير")
 
@@ -746,6 +753,25 @@ HTML = r"""<!DOCTYPE html>
     background:rgba(14,14,16,.72);padding:2px 6px;border-radius:7px;z-index:1}
   .hot-badge{position:absolute;top:8px;right:8px;font-size:11px;font-weight:700;padding:3px 8px;
     border-radius:7px;font-family:'Space Mono',monospace;background:var(--gold);color:#1a1a1a}
+  .var-sec .var-grp{margin-top:12px}
+  .var-sec .var-gt{color:var(--muted);font-size:12.5px;font-weight:600;margin-bottom:8px}
+  .var-track{display:flex;gap:10px;overflow-x:auto;padding:2px 2px 8px;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
+  .var-track::-webkit-scrollbar{height:6px}
+  .var-track::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+  .var-card{flex:0 0 138px;background:var(--surface2);border:1px solid var(--line);border-radius:12px;
+    overflow:hidden;text-decoration:none;color:var(--text);transition:border-color .2s;display:flex;flex-direction:column}
+  .var-card:hover{border-color:rgba(201,162,39,.5)}
+  .var-img{aspect-ratio:1;background:#fff;display:flex;align-items:center;justify-content:center;padding:8px}
+  .var-img img{max-width:100%;max-height:100%;object-fit:contain}
+  .var-body{padding:8px 8px 9px;display:flex;flex-direction:column;gap:5px;flex:1}
+  .var-ref{font-family:'Space Mono',monospace;color:var(--gold-soft);font-size:11.5px;font-weight:700;direction:ltr;text-align:center;word-break:break-all}
+  .var-diff{display:flex;flex-wrap:wrap;gap:4px;justify-content:center}
+  .var-diff span{background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.3);color:#ecc964;
+    border-radius:6px;padding:1px 6px;font-size:10.5px;direction:ltr}
+  .var-price{text-align:center;font-family:'Space Mono',monospace;font-weight:700;color:var(--gold-soft);font-size:14px;margin-top:auto}
+  .var-price small{color:var(--muted);font-weight:400;font-size:10px}
+  .var-price.na{font-family:inherit;font-weight:500;color:var(--muted);font-size:11px}
+  .var-n{text-align:center;color:var(--muted);font-size:11px}
   .result-card{display:none}
   .result-card.show{display:block;animation:fade .3s ease}
   @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
@@ -1457,12 +1483,48 @@ function render(d, yearRows){
     <div class="helpbox" id="help-trend"><div class="ht">الترند</div>اتجاه السعر مؤخراً: يقارن متوسط بيعات آخر 30 يوم بمتوسط الـ 30-90 يوم اللي قبلها، لنفس الحالة. ▲ موجب = السعر صاعد، ▼ سالب = هابط. يجاوب: «وين رايح السعر الآن؟»</div>
     <div class="helpbox" id="help-jump"><div class="ht">القفزة السعرية</div>تغيّر مفاجئ ومستدام في السعر (±15% أو أكثر) خلال آخر سنة. لو اكتُشفت قفزة، التقييم يُحسب من المبيعات بعد القفزة فقط — يتجاهل الأسعار القديمة اللي ما عادت تعكس السوق.</div>
     ${demand?SD+demand:''}
+    <div id="variantsSec" class="var-sec" style="display:none"></div>
     ${salesAll?'<div class="table-divider"><span>سجل كل السنوات ⬇</span></div>'+salesAll:''}
   `;
   out.classList.add('show');
   initPriceHistory(d.reference, d.history);
+  loadVariants(d.reference, curReq.cond, curReq.fs);
   syncFavBtn();
   out.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+// ===== 🔀 خيارات أخرى لنفس الساعة (عرض فقط — السعر من نفس evaluate والكاش) =====
+function varEsc(v){ return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+async function loadVariants(ref, cond, fs){
+  const box = $('variantsSec'); if(!box) return;
+  let groups = [];
+  try{
+    groups = await fetch('/api/variants?'+new URLSearchParams({ref, cond, fs})).then(r=>r.json());
+  }catch(e){ groups = []; }
+  if(curReq.ref !== ref || !$('variantsSec')) return;      // المستخدم انتقل لساعة أخرى
+  if(!Array.isArray(groups) || !groups.length){ box.style.display='none'; return; }
+  const card = it=>{
+    const href = '/?'+new URLSearchParams({ref:it.ref, cond, fs});
+    const img = it.image
+      ? `<img src="${it.image}" alt="${varEsc(it.ref)}" loading="lazy" onerror="this.remove()">`
+      : `<span class="hot-noimg">${varEsc(it.ref)}</span>`;
+    const price = (it.fair!=null)
+      ? `<div class="var-price">${fmt(it.fair)} <small>KWD</small></div>`
+      : `<div class="var-price na">بيانات غير كافية</div>`;
+    return `<a class="var-card" href="${href}">
+      <div class="var-img">${img}</div>
+      <div class="var-body">
+        <div class="var-ref">${varEsc(it.ref)}</div>
+        <div class="var-diff">${it.diff.map(x=>`<span>${varEsc(x)}</span>`).join('')}</div>
+        ${price}
+        <div class="var-n">${fmt(it.n)} مبيع</div>
+      </div></a>`;
+  };
+  box.innerHTML = `<div class="table-divider"><span>🔀 خيارات أخرى لنفس الساعة</span></div>`
+    + groups.map(g=>`<div class="var-grp"><div class="var-gt">${varEsc(g.title)}</div>
+        <div class="var-track">${g.items.map(card).join('')}</div></div>`).join('')
+    + `<div style="text-align:center;font-size:10.5px;color:var(--muted);margin-top:6px">السعر المقترح لكل السنوات · ${cond==='Unworn'?'غير مستخدمة':'مستخدمة'}${fs==='1'?' · Full Set':''} — اضغط أي ساعة لصفحتها</div>`;
+  box.style.display='block';
 }
 
 // ===== المفضّلة =====
@@ -1581,6 +1643,10 @@ async function autoLoadFromUrl(){
     const list = await r.json();
     const m = list.find(x=>x.ref===ref) || list[0];
     if(m){
+      [['cond',params.get('cond')],['fs',params.get('fs')]].forEach(([id,v])=>{
+        const b = v && $(id).querySelector(`button[data-v="${v}"]`);
+        if(b){ $(id).querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); }
+      });
       choose(m);
       $('go').click();
     }
@@ -2825,6 +2891,16 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send(200, jdumps(r, ensure_ascii=False, default=str))
             except Exception as e:
                 self._send(200, jdumps({'ok': False, 'msg': str(e)}, ensure_ascii=False))
+        elif path == '/api/variants':
+            # خيارات أخرى لنفس الساعة — السعر من fair_then.fair_today (evaluate + الكاش المشترك)
+            p = parse_qs(u.query)
+            ref = p.get('ref', [''])[0]
+            cond = p.get('cond', ['Pre-owned'])[0]
+            fs = p.get('fs', ['1'])[0] == '1'
+            try:
+                self._send(200, jdumps(variants.variants(ref, ENGINE, cond, fs), ensure_ascii=False))
+            except Exception:
+                self._send(200, jdumps([], ensure_ascii=False))
         elif path == '/api/byyear':
             p = parse_qs(u.query)
             ref = p.get('ref', [''])[0]
