@@ -898,6 +898,9 @@ HTML = r"""<!DOCTYPE html>
   .today-all:hover{text-decoration:underline;text-underline-offset:3px}
   .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:24px;
     font-family:'Space Mono',monospace}
+  /* صفحة الساعة: لا شيء فوق النتيجة غير «الرئيسية» و«المفضّلة» */
+  body.watch-view .head, body.watch-view #todaySec, body.watch-view #hotSec{display:none!important}
+  body.watch-view nav a:not([href="/"]):not([href="/favorites"]){display:none!important}
 </style>
 </head>
 <body>
@@ -1226,8 +1229,9 @@ function ageText(days){
 function render(d, yearRows){
   const out = $('out');
   const hs=$('hotSec'); if(hs) hs.style.display='none';
-  if(!d.ok){ out.innerHTML='<div class="empty">'+(d.msg||'لا توجد بيانات')+'</div>'; out.classList.add('show'); return; }
+  if(!d.ok){ document.body.classList.remove('watch-view'); out.innerHTML='<div class="empty">'+(d.msg||'لا توجد بيانات')+'</div>'; out.classList.add('show'); return; }
   const sc=$('searchCard'); if(sc) sc.style.display='none';   // نخفي نموذج البحث مع ظهور النتيجة
+  document.body.classList.add('watch-view');
   const confClass = d.confidence==='عالية'?'high':d.confidence==='متوسطة'?'mid':'low';
   let badges='';
   if(d.trend!=null && d.trend!=='-'){
@@ -1609,6 +1613,7 @@ function newSearch(){
   $('go').disabled = true;
   fillYears([]);
   const sc=$('searchCard'); if(sc) sc.style.display='block';   // نرجّع نموذج البحث
+  document.body.classList.remove('watch-view');
   const hs=$('hotSec'); if(hs && $('hotTrack').children.length) hs.style.display='block';
   window.scrollTo({top:0, behavior:'smooth'});
   setTimeout(()=>$('q').focus(), 300);
@@ -1651,6 +1656,7 @@ async function autoLoadFromUrl(){
   const params = new URLSearchParams(location.search);
   const ref = params.get('ref');
   if(!ref) { doSearch(''); return; }
+  document.body.classList.add('watch-view');           // لا وميض لأقسام الرئيسية قبل تحميل الساعة
   try{
     const r = await fetch('/api/search?q='+encodeURIComponent(ref));
     const list = await r.json();
@@ -1663,7 +1669,8 @@ async function autoLoadFromUrl(){
       choose(m);
       $('go').click();
     }
-  }catch(e){ doSearch(''); }
+    else document.body.classList.remove('watch-view');
+  }catch(e){ document.body.classList.remove('watch-view'); doSearch(''); }
 }
 // ===== الأكثر سخونة =====
 function copyRef(e, ref){
