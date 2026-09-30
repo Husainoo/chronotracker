@@ -75,16 +75,41 @@ def build(eng, image_file_for=None):
             FAMILIES.setdefault((a['brand'], a['model']), []).append(ref)
 
 
+SPEC_FIELDS = ('size', 'bracelet', 'dial', 'metal')
+
+
+def _disp(field, v):
+    """صيغة عرض مختصرة لقيمة حقيقية — نفس اختصارات فهرس البحث، بلا تغيير معنى."""
+    if field == 'dial' and v.lower().endswith(' dial'):
+        v = v[:-5].strip()
+    if field == 'metal':
+        v = v.replace('Stainless Steel', 'Steel')
+    return v
+
+
+def spec(a, cur=None):
+    """شرائح المواصفات لمرجع: مقاس · سوار · دايل · معدن. الحقل الفارغ يُحذف (لا تخمين).
+    diff=True لو يختلف عن الساعة الحالية (وقيمتها معروفة)."""
+    out = []
+    for f in SPEC_FIELDS:
+        if not a[f]:
+            continue
+        out.append({'f': f, 'v': _disp(f, a[f]),
+                    'diff': bool(cur and cur['k'][f] and a['k'][f] != cur['k'][f])})
+    return out
+
+
 def _ok(cur, cand, field):
     cv = cur['k'][field]
     return (not cv) or cand['k'][field] == cv
 
 
 def variants(ref, eng=None, cond='Pre-owned', fs=True, with_price=True):
-    """قوائم الأشقاء المجمّعة لمرجع. eng=None أو with_price=False → بلا أسعار."""
+    """{current: مواصفات الساعة الحالية, groups: قوائم الأشقاء المجمّعة}.
+    eng=None أو with_price=False → بلا أسعار."""
     cur = ATTRS.get(ref)
     if not cur:
-        return []
+        return {'current': [], 'groups': []}
     fam = [ATTRS[r] for r in FAMILIES.get((cur['brand'], cur['model']), []) if r != ref]
     out = []
     for field, title in GROUPS:
@@ -115,17 +140,10 @@ def variants(ref, eng=None, cond='Pre-owned', fs=True, with_price=True):
             continue
         items = []
         for c in picks:
-            diff = [c[field]]
-            # أي حقل آخر غير مثبّت واختلف أيضاً نذكره حتى لا يُظنّ مطابقاً
-            for f in ('size', 'bracelet', 'metal', 'dial'):
-                if (f != field and f not in _FIXED[field] and c[f]
-                        and c['k'][f] != cur['k'][f]):
-                    diff.append(c[f])
-            if c['nick'] and c['k']['nick'] != cur['k']['nick']:
-                diff.append(c['nick'])
-            items.append({'ref': c['ref'], 'diff': diff, 'n': c['n'], 'image': c['image'],
+            items.append({'ref': c['ref'], 'spec': spec(c, cur), 'n': c['n'], 'image': c['image'],
                           'nick': c['nick'],
+                          'nick_diff': bool(c['nick'] and c['k']['nick'] != cur['k']['nick']),
                           'fair': (fair_then.fair_today(eng, c['ref'], cond, fs)
                                    if (with_price and eng is not None) else None)})
         out.append({'group': field, 'title': title, 'items': items})
-    return out
+    return {'current': spec(cur), 'groups': out}

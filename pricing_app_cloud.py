@@ -758,16 +758,23 @@ HTML = r"""<!DOCTYPE html>
   .var-track{display:flex;gap:10px;overflow-x:auto;padding:2px 2px 8px;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
   .var-track::-webkit-scrollbar{height:6px}
   .var-track::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
-  .var-card{flex:0 0 138px;background:var(--surface2);border:1px solid var(--line);border-radius:12px;
+  .var-card{flex:0 0 146px;background:var(--surface2);border:1px solid var(--line);border-radius:12px;
     overflow:hidden;text-decoration:none;color:var(--text);transition:border-color .2s;display:flex;flex-direction:column}
   .var-card:hover{border-color:rgba(201,162,39,.5)}
   .var-img{aspect-ratio:1;background:#fff;display:flex;align-items:center;justify-content:center;padding:8px}
   .var-img img{max-width:100%;max-height:100%;object-fit:contain}
   .var-body{padding:8px 8px 9px;display:flex;flex-direction:column;gap:5px;flex:1}
   .var-ref{font-family:'Space Mono',monospace;color:var(--gold-soft);font-size:11.5px;font-weight:700;direction:ltr;text-align:center;word-break:break-all}
-  .var-diff{display:flex;flex-wrap:wrap;gap:4px;justify-content:center}
-  .var-diff span{background:rgba(201,162,39,.12);border:1px solid rgba(201,162,39,.3);color:#ecc964;
-    border-radius:6px;padding:1px 6px;font-size:10.5px;direction:ltr}
+  .var-cur{text-align:center;font-size:12px;color:var(--muted);margin:-4px 0 4px}
+  .var-cur b{color:var(--text);font-weight:500;direction:ltr;unicode-bidi:isolate}
+  .var-nick{text-align:center;font-size:10.5px;color:var(--muted);margin-top:-3px;direction:ltr}
+  .var-nick.on{color:#ecc964}
+  /* 4 شرائح في عمودين = سطران كحد أقصى؛ النص الطويل يُقصّ (القيمة كاملة في title) */
+  .var-chips{display:grid;grid-template-columns:1fr 1fr;gap:4px;direction:ltr}
+  .var-chips span{border:1px solid var(--line);color:var(--muted);background:rgba(255,255,255,.03);
+    border-radius:6px;padding:1px 5px;font-size:10px;line-height:1.5;text-align:center;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .var-chips span.on{border-color:var(--gold);color:#ecc964;background:rgba(201,162,39,.12);font-weight:600}
   .var-price{text-align:center;font-family:'Space Mono',monospace;font-weight:700;color:var(--gold-soft);font-size:14px;margin-top:auto}
   .var-price small{color:var(--muted);font-weight:400;font-size:10px}
   .var-price.na{font-family:inherit;font-weight:500;color:var(--muted);font-size:11px}
@@ -1497,12 +1504,16 @@ function render(d, yearRows){
 function varEsc(v){ return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 async function loadVariants(ref, cond, fs){
   const box = $('variantsSec'); if(!box) return;
-  let groups = [];
+  let data = null;
   try{
-    groups = await fetch('/api/variants?'+new URLSearchParams({ref, cond, fs})).then(r=>r.json());
-  }catch(e){ groups = []; }
+    data = await fetch('/api/variants?'+new URLSearchParams({ref, cond, fs})).then(r=>r.json());
+  }catch(e){ data = null; }
   if(curReq.ref !== ref || !$('variantsSec')) return;      // المستخدم انتقل لساعة أخرى
-  if(!Array.isArray(groups) || !groups.length){ box.style.display='none'; return; }
+  const groups = (data && Array.isArray(data.groups)) ? data.groups : [];
+  if(!groups.length){ box.style.display='none'; return; }
+  const cur = (data.current||[]).map(c=>varEsc(c.v)).join(' · ');
+  const chips = sp=>`<div class="var-chips">${(sp||[]).map(c=>
+      `<span class="${c.diff?'on':''}" title="${varEsc(c.v)}">${varEsc(c.v)}</span>`).join('')}</div>`;
   const card = it=>{
     const href = '/?'+new URLSearchParams({ref:it.ref, cond, fs});
     const img = it.image
@@ -1515,12 +1526,14 @@ async function loadVariants(ref, cond, fs){
       <div class="var-img">${img}</div>
       <div class="var-body">
         <div class="var-ref">${varEsc(it.ref)}</div>
-        <div class="var-diff">${it.diff.map(x=>`<span>${varEsc(x)}</span>`).join('')}</div>
+        ${it.nick?`<div class="var-nick${it.nick_diff?' on':''}">${varEsc(it.nick)}</div>`:''}
+        ${chips(it.spec)}
         ${price}
         <div class="var-n">${fmt(it.n)} مبيع</div>
       </div></a>`;
   };
   box.innerHTML = `<div class="table-divider"><span>🔀 خيارات أخرى لنفس الساعة</span></div>`
+    + (cur?`<div class="var-cur">الساعة الحالية: <b>${cur}</b></div>`:'')
     + groups.map(g=>`<div class="var-grp"><div class="var-gt">${varEsc(g.title)}</div>
         <div class="var-track">${g.items.map(card).join('')}</div></div>`).join('')
     + `<div style="text-align:center;font-size:10.5px;color:var(--muted);margin-top:6px">السعر المقترح لكل السنوات · ${cond==='Unworn'?'غير مستخدمة':'مستخدمة'}${fs==='1'?' · Full Set':''} — اضغط أي ساعة لصفحتها</div>`;
@@ -2900,7 +2913,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 self._send(200, jdumps(variants.variants(ref, ENGINE, cond, fs), ensure_ascii=False))
             except Exception:
-                self._send(200, jdumps([], ensure_ascii=False))
+                self._send(200, jdumps({'current': [], 'groups': []}, ensure_ascii=False))
         elif path == '/api/byyear':
             p = parse_qs(u.query)
             ref = p.get('ref', [''])[0]
