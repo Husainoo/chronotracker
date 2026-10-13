@@ -1,13 +1,13 @@
 {
- "rlo": 0.8527771101146202,
- "rhi": 1.1964351288237425,
- "n_sales": 52479,
- "n_points": 814,
+ "rlo": 0.8455598658264353,
+ "rhi": 1.1942145036417648,
+ "n_sales": 53618,
+ "n_points": 832,
  "target_coverage": 0.85,
- "coverage_in_sample": 0.8499971417138283,
+ "coverage_in_sample": 0.8499757544108322,
  "coverage_2fold_cv_by_ref": [
-  0.8612093289046038,
-  0.8400326797385621
+  0.8876867920936578,
+  0.7969591384225531
  ],
  "method": "quantiles [7.5, 92.5] of individual hidden-sale ratios (sale/sib_fair) on hide-all-but-1-2 simulation"
 }
