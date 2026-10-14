@@ -650,7 +650,7 @@ def _load_listings(refs):
     المحرك يسقط auctionWatchId عند التحميل، ونحتاجه كمعرّف فريد للإدراج."""
     import pandas as pd
     cols = ['referance', 'auctionWatchId', 'status', 'soldPrice', 'lastBid', 'priceDate',
-            'condition', 'fullSet', 'year', 'pageName', 'brand', 'model', 'nickName']
+            'condition', 'fullSet', 'year', 'pageName', 'brand', 'model', 'nickName', 'size']
     df = pd.read_csv(CSV_PATH, usecols=cols)
     df = df[df['referance'].isin(refs)].copy()
     df = df[df['auctionWatchId'].notna()]
@@ -669,6 +669,16 @@ def _clean(v):
 def _ref_label(row):
     nick = _clean(row.get('nickName'))
     return f"{_clean(row.get('brand'))} {_clean(row.get('model'))}" + (f" ({nick})" if nick else "")
+
+
+def _size_mm(rows):
+    """مقاس الساعة من حقل size الحقيقي (مثل «36mm»). يُعرض فقط لو القيمة بالملّيمتر صراحةً —
+    لا تخمين: قيمة فارغة أو بلا mm (مثل «Large») تُحذف."""
+    for r in rows:
+        s = _clean(r.get('size'))
+        if 'mm' in s.lower():
+            return ' '.join(s.split())
+    return ''
 
 
 def _fmt_price(p):
@@ -742,7 +752,8 @@ def format_alert(groups, date_s):
     header = f"🔔 جديد على مفضّلاتك — {date_s}"
     blocks = []
     for ref, label, rows in groups:
-        lines = [f"⌚ {ref} — {label}"] + [_listing_line(r)[0] for r in rows]
+        size = _size_mm(rows)
+        lines = [f"⌚ {ref} — {label}" + (f" · {size}" if size else "")] + [_listing_line(r)[0] for r in rows]
         blocks.append("\n".join(lines))
     msgs, cur = [], header
     for b in blocks:
