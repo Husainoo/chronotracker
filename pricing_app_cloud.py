@@ -43,6 +43,7 @@ def jdumps(obj, **kw):
 try:
     import pandas as pd
     from watch_engine import WatchValuationEngine
+    from ref_search import query_fallbacks
     import fair_then
     import variants
 except Exception as e:
@@ -291,12 +292,20 @@ def parse_cookies(cookie_header):
 # ========================
 # بحث + صور + مفضّلة
 # ========================
+def _search_terms(q):
+    terms = q.split()
+    return [m for m in SEARCH_INDEX if all(t in m['search'] for t in terms)]
+
 def search_models(q, limit=20):
     q = (q or '').strip().lower()
     if not q:
         return SEARCH_INDEX[:limit]
-    terms = q.split()
-    out = [m for m in SEARCH_INDEX if all(t in m['search'] for t in terms)]
+    out = _search_terms(q)
+    if not out:                                 # بلا مسافات / بدون «M» تيودور — فقط عند عدم وجود نتيجة
+        for alt in query_fallbacks(q):
+            out = _search_terms(alt)
+            if out:
+                break
     return out[:limit]
 
 def _safe_img_name(ref):

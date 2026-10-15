@@ -88,6 +88,7 @@ memory = load_memory()
 # ====== Tools (Function Calling)
 import re as _re
 
+from ref_search import ref_aliases, without_m, query_fallbacks
 # لاحقة المتغيّر (الميناء/السوار) في مراجع رولكس الحديثة: 126710BLNR-0002
 _SUFFIX_RE = _re.compile(r'^(.+?)-([0-9A-Za-z]{2,4})$')
 
@@ -136,14 +137,26 @@ def resolve_reference(reference: str) -> dict:
     by_upper = {}
     for r in refs:
         by_upper.setdefault(_norm_ref(r), r)
-    if typed in by_upper:
-        return {'status': 'exact', 'reference': by_upper[typed]}
-    # المستخدم كتب الجذع فقط (بدون لاحقة) → كل المراجع التي جذعها = المكتوب
-    variants = []
-    for up, orig in by_upper.items():
-        m = _SUFFIX_RE.match(up)
-        if m and m.group(1) == typed:
-            variants.append(orig)
+    for r in refs:                              # مرجع مخزّن بـ «M13316» يُطابَق أيضاً بـ «13316»
+        for alias in ref_aliases(r):
+            by_upper.setdefault(_norm_ref(alias), r)
+
+    def _match(key):
+        if key in by_upper:
+            return by_upper[key], []
+        # المستخدم كتب الجذع فقط (بدون لاحقة) → كل المراجع التي جذعها = المكتوب
+        found = []
+        for up, orig in by_upper.items():
+            m = _SUFFIX_RE.match(up)
+            if m and m.group(1) == key and orig not in found:
+                found.append(orig)
+        return None, found
+
+    exact, variants = _match(typed)
+    if exact is None and not variants and without_m(typed):
+        exact, variants = _match(without_m(typed).upper())   # تيودور: «M7939…» مخزّن «7939…»
+    if exact is not None:
+        return {'status': 'exact', 'reference': exact}
     if not variants:
         return {'status': 'none', 'typed': typed}
     infos = sorted((_variant_info(v) for v in variants), key=lambda d: d['reference'])
@@ -167,6 +180,10 @@ def search_watches(query: str) -> str:
         text = (s['referance'].astype(str) + ' ' + s['brand'].astype(str) + ' ' +
                 s['model'].astype(str) + ' ' + s['nickName'].astype(str)).str.lower()
         hits = s[text.str.contains(q, regex=False, na=False)]
+        for alt in (query_fallbacks(q) if hits.empty else []):   # بلا مسافات / بدون «M» تيودور
+            hits = s[text.str.contains(alt, regex=False, na=False)]
+            if not hits.empty:
+                break
         if hits.empty:
             return f"🔍 لم أجد ساعات تطابق '{query}'"
         refs = hits['referance'].value_counts().index.tolist()
