@@ -543,11 +543,14 @@ def _redact(msg):
     """يحذف التوكن من أي نص قبل تسجيله في اللوق."""
     return str(msg).replace(TELEGRAM_BOT_TOKEN, '***') if TELEGRAM_BOT_TOKEN else str(msg)
 
-def send_message(chat_id: int, text: str):
+def send_message(chat_id: int, text: str, parse_mode: str = None):
     """إرسال رسالة على Telegram، مع كشف سبب الفشل الفعلي في اللوق (بدون التوكن)."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {'chat_id': chat_id, 'text': text}
+    if parse_mode:
+        payload['parse_mode'] = parse_mode
     try:
-        resp = requests.post(url, json={'chat_id': chat_id, 'text': text}, timeout=15)
+        resp = requests.post(url, json=payload, timeout=15)
     except Exception as e:
         logger.error(f"❌ تعذّر الاتصال بتيليجرام (إرسال): {_redact(e)}")
         return False
@@ -702,32 +705,48 @@ def _fmt_price(p):
     return f"{int(round(float(p))):,}"
 
 
-def _listing_line(row):
-    """سطر واحد للإدراج بصيغة الرسالة. الشارة «مقابل العادل وقتها» للمباع فقط —
-    نفس منطق الموقع تماماً (fair_then.fair_then_pct على نفس المحرك)."""
+_AR_MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو',
+              'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر']
+
+
+def _ar_date(dt):
+    """«17 أكتوبر»."""
+    return f"{dt.day} {_AR_MONTHS[dt.month - 1]}"
+
+
+def _alert_line(row):
+    """سطر إدراج واحد (HTML مُهرَّب) + (المزاد، dd/mm) لتجميعهما تحت الساعة.
+    الشارة لونية فقط وللمباع فقط — نفس حساب الموقع (fair_then.fair_then_pct على نفس المحرك).
+    أي حقل ناقص يُحذف بصمت."""
     import pandas as pd
+    from html import escape
     status = _clean(row.get('status'))
     sold = status == 'Sold' and float(row.get('soldPrice') or 0) > 0
     yr = row.get('year')
-    yr_s = str(int(yr)) if (yr is not None and not pd.isna(yr) and 1990 <= float(yr) <= 2030) else '—'
+    yr_s = str(int(yr)) if (yr is not None and not pd.isna(yr) and 1990 <= float(yr) <= 2030) else ''
     cond_raw = _clean(row.get('condition'))
-    cond = 'Unworn' if cond_raw.startswith('Unworn') else 'Pre-owned'
-    cond_ar = 'غير مستخدمة' if cond == 'Unworn' else 'مستخدمة'
+    cond = 'Unworn' if cond_raw.startswith('Unworn') else 'Pre-owned'     # للحساب فقط — كما كان
+    cond_ar = '' if not cond_raw else ('غير مستخدمة' if cond == 'Unworn' else 'مستعملة')
     fs = _clean(row.get('fullSet')).startswith('Full Set')
-    house = _clean(row.get('pageName')) or '—'
+    house = escape(_clean(row.get('pageName')))
     date = row['priceDate'].strftime('%Y-%m-%d')
     if sold:
         price = float(row['soldPrice'])
-        line = f"  ✅ بيعت: {_fmt_price(price)} KWD · {yr_s} · {cond_ar} · {house} · {date}"
+        parts = [f"✅ <b>{_fmt_price(price)}</b> د.ك", yr_s, cond_ar]
         _ft, pct = _fair_then.fair_then_pct(ENGINE, _clean(row.get('referance')), _clean(row.get('brand')),
                                             cond, fs, price, date)
         if pct is not None:
-            sign = '+' if pct > 0 else ('−' if pct < 0 else '')
-            line += f" · [مقابل العادل وقتها: {sign}{abs(int(pct))}%]"
-        return line, pct
-    bid = float(row.get('lastBid') or 0)
-    bid_s = f"أعلى مزايدة {_fmt_price(bid)}" if bid > 0 else "بلا مزايدات"
-    return f"  ❌ لم تُبع: {bid_s} · {yr_s} · {cond_ar} · {house} · {date}", None
+            if abs(pct) <= 2:
+                parts.append("🟡 عادل")
+            elif pct < 0:
+                parts.append(f"🟢 تحت العادل −{abs(int(pct))}%")
+            else:
+                parts.append(f"🔴 فوق العادل +{int(pct)}%")
+    else:
+        bid = float(row.get('lastBid') or 0)
+        head = f"❌ <b>{_fmt_price(bid)}</b> مزايدة" if bid > 0 else "❌ بلا مزايدات"
+        parts = [head, yr_s, cond_ar]
+    return " · ".join(p for p in parts if p), house, row['priceDate'].strftime('%d/%m')
 
 
 def find_new_listings(favs, state, preview_days=None):
@@ -765,12 +784,25 @@ def find_new_listings(favs, state, preview_days=None):
 
 
 def format_alert(groups, date_s):
-    """رسالة عربية مضغوطة، مجمّعة لكل ساعة. تُقسَّم على حدود الساعات لو تجاوزت حدّ تلقرام."""
-    header = f"🔔 جديد على مفضّلاتك — {date_s}"
+    """رسالة HTML مختصرة (parse_mode=HTML، كل نص متغيّر مُهرَّب)، مجمّعة لكل ساعة.
+    تُقسَّم على حدود الساعات فقط لو تجاوزت حدّ تلقرام."""
+    from html import escape
+    header = f"🔔 <b>مفضّلاتك</b> · {_ar_date(datetime.strptime(date_s, '%Y-%m-%d'))}"
     blocks = []
-    for ref, label, rows in groups:
+    for ref, _label, rows in groups:
+        first = rows[0]
+        title = _clean(first.get('nickName')) or _clean(first.get('model'))
         size = _size_mm(rows)
-        lines = [f"⌚ {ref} — {label}" + (f" · {size}" if size else "")] + [_listing_line(r)[0] for r in rows]
+        head = "⌚ " + " · ".join(x for x in (f"<b>{escape(title)}</b>" if title else "", escape(size)) if x)
+        lines = [head, f"<code>{escape(str(ref))}</code>"]
+        items = [_alert_line(r) for r in rows]
+        places = {(h, d) for _, h, d in items}
+        if len(places) == 1:
+            h, d = next(iter(places))
+            lines += [text for text, _, _ in items]
+            lines.append("🏛 " + " · ".join(x for x in (h, d) if x))
+        else:
+            lines += [" · ".join(x for x in (text, h, d) if x) for text, h, d in items]
         blocks.append("\n".join(lines))
     msgs, cur = [], header
     for b in blocks:
@@ -797,19 +829,20 @@ def run_favorites_check(chat_ids=None, preview_days=None, dry_run=False, notify_
         groups, seen_now = find_new_listings(favs, state, preview_days)
         date_s = _alert_now().strftime('%Y-%m-%d')
         msgs = format_alert(groups, date_s) if groups else []
+        mode = 'HTML' if groups else None          # رسالة التنبيه HTML؛ الرسائل النصية الأخرى كما هي
         if preview_days is not None:
             if not msgs and notify_empty:
                 msgs = [f"لا إدراجات على مفضّلاتك ({len(favs)}) خلال آخر {preview_days} يوم."]
             if not dry_run:
                 for c in chat_ids:
                     for m in msgs:
-                        send_message(c, m)
+                        send_message(c, m, parse_mode=mode)
             return msgs
         sent_ok = True
         if msgs and not dry_run:
             for c in chat_ids:
                 for m in msgs:
-                    sent_ok = send_message(c, m) and sent_ok
+                    sent_ok = send_message(c, m, parse_mode=mode) and sent_ok
         elif not msgs and notify_empty and not dry_run:
             for c in chat_ids:
                 send_message(c, f"✓ ما فيه إدراجات جديدة على مفضّلاتك ({len(favs)} ساعة).")
