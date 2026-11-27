@@ -1,5 +1,5 @@
 # Render Blueprint — ChronoTracker
-# الأسرار (APP_PASSWORD, TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, ALLOWED_USER_IDS)
+# الأسرار (APP_PASSWORD)
 # تُدخل من لوحة تحكم Render (sync: false) — لا تُكتب هنا.
 services:
   # ====== تطبيق التسعير (Web Service)
@@ -37,46 +37,5 @@ services:
         value: images
     # ملاحظة: Render يضبط PORT تلقائياً والتطبيق يقرأه من البيئة.
 
-  # ====== بوت تلقرام (Background Worker — دائم التشغيل، مدفوع)
-  - type: worker
-    name: chronotracker-bot
-    runtime: python
-    plan: starter
-    buildCommand: pip install -r requirements.txt
-    startCommand: python telegram_bot.py
-    # قرص دائم لحالة تنبيه المفضّلة (favorites_alerts.json) — حتى لا تتكرر
-    # التنبيهات بعد كل إعادة نشر (نظام الملفات مؤقت). قرص منفصل عن قرص الويب:
-    # الأقراص لا تُشارَك بين الخدمات، لذا يجلب البوت المفضّلة عبر واجهة الموقع.
-    disk:
-      name: chronotracker-bot-data
-      mountPath: /var/data
-      sizeGB: 1
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.11.9"
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
-      - key: ANTHROPIC_API_KEY
-        sync: false
-      - key: ALLOWED_USER_IDS
-        sync: false
-      - key: CSV_PATH
-        value: chronotracker_complete_v2.csv
-      - key: DISC_CSV
-        value: discontinued_rolex.csv
-      # تنبيه المفضّلة اليومي: يجلب المفضّلة من خدمة الويب بنفس كلمة سر الموقع
-      - key: APP_PASSWORD  # تُنسخ تلقائياً من خدمة الويب (نفس كلمة سر الموقع)
-        fromService:
-          type: web
-          name: chronotracker-web
-          envVarKey: APP_PASSWORD
-      # عنوان الموقع العام (fromService/host يعطي الاسم الداخلي chronotracker-web
-      # غير القابل للوصول عبر HTTPS — لذا نثبّت العنوان العام صراحة)
-      - key: WEB_BASE_URL
-        value: https://chronotracker-web.onrender.com
-      - key: BOT_DATA_DIR
-        value: /var/data
-      - key: ALERT_TZ
-        value: Asia/Kuwait
-      - key: ALERT_HOUR
-        value: "19"
+  # بوت تلقرام لم يعد على Render: يعمل محلياً على الماك عبر اشتراك Claude
+  # (run_bot_local.sh + launchd/com.husain.chronotracker.bot.plist) — بدون مفتاح API.
