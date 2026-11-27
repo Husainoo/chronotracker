@@ -42,9 +42,14 @@ CSV_PATH = os.getenv('CSV_PATH', 'chronotracker_complete_v2.csv')
 DISC_CSV = os.getenv('DISC_CSV', 'discontinued_rolex.csv')
 MEMORY_FILE = 'bot_memory.json'
 
+# USE_CLAUDE_SUBSCRIPTION=1 → نداءات Claude تمر عبر اشتراك Claude (claude -p) بدل مفتاح الـ API
+USE_SUBSCRIPTION = os.getenv('USE_CLAUDE_SUBSCRIPTION') == '1'
+
 # فحص المتطلبات
-if not TELEGRAM_BOT_TOKEN or not ANTHROPIC_API_KEY:
-    sys.exit("❌ خطأ: TELEGRAM_BOT_TOKEN و ANTHROPIC_API_KEY مطلوبان")
+if not TELEGRAM_BOT_TOKEN:
+    sys.exit("❌ خطأ: TELEGRAM_BOT_TOKEN مطلوب")
+if not USE_SUBSCRIPTION and not ANTHROPIC_API_KEY:
+    sys.exit("❌ خطأ: ANTHROPIC_API_KEY مطلوب (أو USE_CLAUDE_SUBSCRIPTION=1 للتشغيل على الاشتراك)")
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(message)s')
 logger = logging.getLogger(__name__)
@@ -63,7 +68,12 @@ except Exception as e:
     sys.exit()
 
 # ====== Anthropic Client
-client = Anthropic()
+if USE_SUBSCRIPTION:
+    from sub_client import SubscriptionClient
+    client = SubscriptionClient()      # اشتراك Claude عبر claude -p — بدون أي مفتاح API
+    logger.info("✓ نداءات Claude على الاشتراك (claude -p) — بدون API")
+else:
+    client = Anthropic()
 
 # ====== ذاكرة المحادثات
 def load_memory():
@@ -989,7 +999,7 @@ if __name__ == '__main__':
     print(f"\n{'='*60}")
     print(f"🤖 ChronoTracker Bot")
     print(f"{'='*60}")
-    print(f"📊 النموذج: Claude Opus 4.8")
+    print(f"📊 النموذج: Claude Opus 4.8 — " + ("اشتراك Claude (claude -p)" if USE_SUBSCRIPTION else "Anthropic API"))
     print(f"🔐 المستخدمون المسموحون: {ALLOWED_USER_IDS}")
     print(f"💾 الذاكرة: {MEMORY_FILE}")
     print(f"⭐ تنبيه المفضّلة: يومياً {ALERT_HOUR:02d}:{ALERT_MINUTE:02d} ({getattr(ALERT_TZ, 'key', ALERT_TZ)}) — الحالة: {ALERT_STATE_FILE}")

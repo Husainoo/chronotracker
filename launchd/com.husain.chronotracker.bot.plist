@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.husain.chronotracker.bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/macminihusain/ChronoTracker/run_bot_local.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/macminihusain/ChronoTracker</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/macminihusain/ChronoTracker/logs/bot.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/macminihusain/ChronoTracker/logs/bot.err.log</string>
+</dict>
+</plist>

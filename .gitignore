@@ -12,3 +12,8 @@ venv/
 
 # macOS junk
 .DS_Store
+
+# Local Telegram bot (runs on this Mac through the Claude subscription)
+bot.env
+bot_data/
+logs/
